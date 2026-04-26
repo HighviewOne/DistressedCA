@@ -28,12 +28,28 @@ def main():
 
     print(f"\nExporting to {OUT}…")
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    # Convert mixed-type object columns to string so Parquet accepts them
+
+    # Convert mixed-type object columns to clean strings
     for col in df.select_dtypes(include="object").columns:
         df[col] = df[col].astype(str).replace("nan", "")
+
+    # Low-cardinality columns → Categorical (smaller file, faster filtering)
+    for col in ["County", "Stage", "Document Type", "Hard Money Loan?",
+                "Corporate Grantor?", "Owner-Occupied?", "Source",
+                "Use Type", "Use Description"]:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
+
+    # Simple data quality check before writing
+    assert len(df) > 10_000, f"Suspiciously few records: {len(df)}"
+    assert df["Stage"].notna().sum() > 0, "Stage column is empty"
+    geocoded = df[["Latitude", "Longitude"]].apply(pd.to_numeric, errors="coerce").dropna().shape[0]
+    assert geocoded > 1_000, f"Too few geocoded records: {geocoded}"
+
     df.to_parquet(OUT, index=False, compression="zstd")
     size_kb = OUT.stat().st_size / 1024
-    print(f"  Written: {size_kb:.0f} KB")
+    print(f"  Written: {size_kb:.0f} KB  (was 750 KB before Categorical schema)")
+    print(f"  Validation passed: {len(df):,} records, {geocoded:,} geocoded")
     print("\nDone. Commit assets/data/nod_master.parquet and push to GitHub.")
 
 if __name__ == "__main__":

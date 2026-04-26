@@ -1,5 +1,6 @@
 import dash
-from dash import html, dcc, callback, Output, Input, dash_table
+from dash import html, dcc, callback, Output, Input, State, dash_table
+from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import dash_leaflet as dl
 from dash_extensions.javascript import assign
@@ -8,6 +9,7 @@ from data.loader import (
     STAGE_COLORS, STAGE_SHORT,
 )
 import pandas as pd
+from datetime import date
 
 dash.register_page(
     __name__,
@@ -144,6 +146,7 @@ def layout():
                 ], href="/", className="fw-bold fs-5 text-danger"),
                 dbc.Nav([
                     dbc.NavItem(dbc.NavLink("Map", href="/", active="exact")),
+                    dbc.NavItem(dbc.NavLink("Trends", href="/trends")),
                     dbc.NavItem(dbc.NavLink("About", href="/about")),
                     dbc.NavItem(dbc.NavLink(
                         [html.I(className="bi bi-github me-1"), "GitHub"],
@@ -243,6 +246,9 @@ def layout():
 
             # --- Map + Table ---
             dbc.Col([
+                # Download component (invisible, triggered by callback)
+                dcc.Download(id="download-csv"),
+
                 # Map card
                 dbc.Card([
                     dl.Map(
@@ -251,11 +257,24 @@ def layout():
                         zoom=6,
                         style={"height": "56vh", "width": "100%", "borderRadius": "4px"},
                         children=[
-                            dl.TileLayer(
-                                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-                                maxZoom=19,
-                            ),
+                            dl.LayersControl([
+                                dl.BaseLayer(
+                                    dl.TileLayer(
+                                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+                                        maxZoom=19,
+                                    ),
+                                    name="Street Map", checked=True,
+                                ),
+                                dl.BaseLayer(
+                                    dl.TileLayer(
+                                        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+                                        attribution="Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics",
+                                        maxZoom=19,
+                                    ),
+                                    name="Satellite",
+                                ),
+                            ]),
                             dl.GeoJSON(
                                 id="map-layer",
                                 data={"type": "FeatureCollection", "features": []},
@@ -285,6 +304,11 @@ def layout():
                     dbc.CardHeader([
                         html.H6("Property Records", className="mb-0 fw-bold d-inline"),
                         html.Span(id="table-count", className="ms-2 small text-muted"),
+                        dbc.Button(
+                            [html.I(className="bi bi-download me-1"), "Export CSV"],
+                            id="export-btn", size="sm", color="secondary",
+                            outline=True, className="float-end",
+                        ),
                     ]),
                     dbc.CardBody(
                         html.Div(id="table-container", style={"overflowX": "auto"}),
@@ -424,3 +448,39 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags):
         )
 
     return geojson, stats, table, table_count_text, loan_label
+
+
+@callback(
+    Output("download-csv", "data"),
+    Input("export-btn", "n_clicks"),
+    State("county-filter", "value"),
+    State("stage-filter", "value"),
+    State("date-filter", "start_date"),
+    State("date-filter", "end_date"),
+    State("loan-slider", "value"),
+    State("flag-filter", "value"),
+    prevent_initial_call=True,
+)
+def export_csv(n_clicks, counties, stages, date_start, date_end, loan_range, flags):
+    if not n_clicks:
+        raise PreventUpdate
+    df = load_df()
+    hard_money = "hard_money" in (flags or [])
+    corporate  = "corporate"  in (flags or [])
+    upcoming   = "upcoming_auctions" in (flags or [])
+    filtered = filter_df(
+        df,
+        counties=counties or None,
+        stages=stages or None,
+        date_start=date_start,
+        date_end=date_end,
+        hard_money=hard_money,
+        corporate=corporate,
+        loan_min=loan_range[0] if loan_range else None,
+        loan_max=loan_range[1] if loan_range else None,
+        upcoming_auctions=upcoming,
+    )
+    on_map = filtered.dropna(subset=["Latitude", "Longitude"])
+    export_df = pd.DataFrame(to_table_records(on_map, max_rows=99_999))
+    filename = f"distressedca_{date.today()}.csv"
+    return dcc.send_data_frame(export_df.to_csv, filename, index=False)

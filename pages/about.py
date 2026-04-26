@@ -40,6 +40,7 @@ def layout():
                 ], href="/", className="fw-bold fs-5 text-danger"),
                 dbc.Nav([
                     dbc.NavItem(dbc.NavLink("Map", href="/")),
+                    dbc.NavItem(dbc.NavLink("Trends", href="/trends")),
                     dbc.NavItem(dbc.NavLink("About", href="/about", active=True)),
                     dbc.NavItem(dbc.NavLink(
                         [html.I(className="bi bi-github me-1"), "GitHub"],

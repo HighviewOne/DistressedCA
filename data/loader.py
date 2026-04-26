@@ -207,47 +207,44 @@ def load_df() -> pd.DataFrame:
     master["apn_norm"] = master["APN"].apply(_norm_apn)
     master["Source"] = "NOD Master"
 
-    # Initialize RETRAN columns with NaT/NaN
-    for col in ["Sale Date", "Sale Time", "Min Bid", "Auction Location",
-                "LTV", "EMV", "Default Amount", "Trustee Name",
-                "Trustee Phone", "Beneficiary", "Ben Phone"]:
-        master[col] = None
-
     rt = _load_retran_raw()
     if not rt.empty:
         enrichment = _build_retran_enrichment(rt)
-        enrichment = enrichment.set_index("apn_norm")
 
-        for col in ["sale_date", "sale_time", "min_bid", "sale_location",
-                    "sale_location_city", "ltv", "emv", "default_amount",
-                    "trustee_name", "trustee_phone", "beneficiary", "ben_phone"]:
-            if col not in enrichment.columns:
-                enrichment[col] = None
+        # Build Auction Location as a combined field before renaming
+        enrichment["Auction Location"] = (
+            enrichment["sale_location"].fillna("").str.strip()
+            + " "
+            + enrichment["sale_location_city"].fillna("").str.strip()
+        ).str.strip()
 
-        for apn, row_e in enrichment.iterrows():
-            mask = master["apn_norm"] == apn
-            if mask.any():
-                master.loc[mask, "Sale Date"] = row_e.get("sale_date")
-                master.loc[mask, "Sale Time"] = str(row_e.get("sale_time") or "").strip()
-                master.loc[mask, "Min Bid"] = row_e.get("min_bid")
-                master.loc[mask, "LTV"] = row_e.get("ltv")
-                master.loc[mask, "EMV"] = row_e.get("emv")
-                master.loc[mask, "Default Amount"] = row_e.get("default_amount")
-                master.loc[mask, "Trustee Name"] = str(row_e.get("trustee_name") or "").strip()
-                master.loc[mask, "Trustee Phone"] = str(row_e.get("trustee_phone") or "").strip()
-                master.loc[mask, "Beneficiary"] = str(row_e.get("beneficiary") or "").strip()
-                master.loc[mask, "Ben Phone"] = str(row_e.get("ben_phone") or "").strip()
-                loc = " ".join(filter(None, [
-                    str(row_e.get("sale_location") or "").strip(),
-                    str(row_e.get("sale_location_city") or "").strip(),
-                ]))
-                master.loc[mask, "Auction Location"] = loc or None
+        enrich_df = enrichment.rename(columns={
+            "sale_date":      "Sale Date",
+            "sale_time":      "Sale Time",
+            "min_bid":        "Min Bid",
+            "ltv":            "LTV",
+            "emv":            "EMV",
+            "default_amount": "Default Amount",
+            "trustee_name":   "Trustee Name",
+            "trustee_phone":  "Trustee Phone",
+            "beneficiary":    "Beneficiary",
+            "ben_phone":      "Ben Phone",
+        })[["apn_norm", "Sale Date", "Sale Time", "Min Bid", "Auction Location",
+            "LTV", "EMV", "Default Amount", "Trustee Name",
+            "Trustee Phone", "Beneficiary", "Ben Phone"]]
+
+        master = master.merge(enrich_df, on="apn_norm", how="left")
 
         # Append standalone RETRAN records
         master_apns = set(master["apn_norm"].tolist())
         standalone = _make_standalone_retran(rt, master_apns)
         if not standalone.empty:
             master = pd.concat([master, standalone], ignore_index=True)
+    else:
+        for col in ["Sale Date", "Sale Time", "Min Bid", "Auction Location",
+                    "LTV", "EMV", "Default Amount", "Trustee Name",
+                    "Trustee Phone", "Beneficiary", "Ben Phone"]:
+            master[col] = None
 
     master["Sale Date"] = pd.to_datetime(master["Sale Date"], errors="coerce")
     return master
