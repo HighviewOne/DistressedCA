@@ -1,5 +1,7 @@
 import glob
+import math
 import os
+import re
 import pandas as pd
 from functools import lru_cache
 
@@ -23,6 +25,55 @@ STAGE_SHORT = {
     "NOR  — Notice of Rescission": "NOR",
     "TDUS — Trustee's Deed Upon Sale": "TDUS",
 }
+
+# Known California foreclosure auction sites (lat, lon)
+_AUCTION_COORDS: dict[str, tuple[float, float]] = {
+    "250 MAIN EL CAJON":       (32.7948, -116.9625),  # San Diego Co.
+    "400 CIVIC POMONA":        (34.0553, -117.7509),  # LA Co. East
+    "13111 SYCAMORE NORWALK":  (33.9064, -118.0839),  # LA Co.
+    "815 SIXTH CORONA":        (33.8783, -117.5667),  # Riverside Co.
+    "849 SIXTH CORONA":        (33.8783, -117.5667),  # Riverside Co.
+    "13220 CENTRAL CHINO":     (34.0166, -117.6882),  # SB Co.
+    "13260 CENTRAL CHINO":     (34.0166, -117.6882),
+    "10650 TREENA SAN DIEGO":  (32.8783, -117.1478),
+    "17305 GILMORE LAKE BALBOA":(34.1946, -118.4928), # LA Co.
+    "2607 COLORADO EAGLE ROCK":(34.1343, -118.2001),  # LA Co.
+    "100 CITY DRIVE ORANGE":   (33.8002, -117.8740),  # OC
+    "700 CIVIC SANTA ANA":     (33.7479, -117.8677),  # OC
+    "8180 KAISER ANAHEIM":     (33.8501, -117.7551),  # OC
+    "217 CIVIC VISTA":         (33.2000, -117.2423),  # SD Co.
+    "351 ARROWHEAD SAN BERNARDINO": (34.1066, -117.2929),
+    "800 VICTORIA VENTURA":    (34.2652, -119.2290),
+}
+
+_CLEAN_AUCTION = re.compile(r'\b(NAN|CA|AT ENTRANCE|MAIN ENTRANCE|SUITE?\s*\d+)\b|[,\.\(\)]', re.I)
+
+
+def _auction_coords(location: str) -> tuple[float, float] | None:
+    """Return (lat, lon) for a known auction location string, else None."""
+    raw = _CLEAN_AUCTION.sub(' ', str(location or "")).upper()
+    raw = re.sub(r'\s+', ' ', raw).strip()
+    # Extract street number + first keyword + city keyword
+    tokens = raw.split()
+    if len(tokens) < 2:
+        return None
+    key = " ".join(t for t in tokens if t not in ("E", "W", "N", "S", "ST", "AVE", "AV",
+                                                    "BLVD", "DR", "RD", "DRIVE", "STREET",
+                                                    "BOULEVARD"))[:40]
+    for pattern, coords in _AUCTION_COORDS.items():
+        parts = pattern.split()
+        if all(p in key for p in parts):
+            return coords
+    return None
+
+
+def _haversine_miles(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 3958.8
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+    a = (math.sin((lat2-lat1)/2)**2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2-lon1)/2)**2)
+    return round(2 * R * math.asin(math.sqrt(a)), 1)
+
 
 TRUSTEE_PORTALS: dict[str, str] = {
     "CLEAR RECON":        "https://clearreconcorp.com/",
@@ -355,6 +406,17 @@ _STAGE_PRIORITY = {
 }
 
 
+def _calc_auction_dist(prop_lat: float, prop_lon: float, location: str) -> str:
+    """Return formatted distance string (e.g. '12.3 mi') or empty string."""
+    if not location or str(location).upper().strip() in ("", "NAN", "NONE"):
+        return ""
+    coords = _auction_coords(location)
+    if coords is None:
+        return ""
+    dist = _haversine_miles(prop_lat, prop_lon, coords[0], coords[1])
+    return f"{dist} mi"
+
+
 def _group_by_apn(geo: pd.DataFrame) -> pd.DataFrame:
     """
     Consolidate multi-filing records into one row per unique property using APN.
@@ -459,6 +521,10 @@ def to_geojson(df: pd.DataFrame) -> dict:
                 "lon_val": float(row["Longitude"]),
                 "trustee_url": _trustee_portal(
                     str(row.get("Trustee Name") or row.get("Trustee/Lender") or "")
+                ),
+                "auction_dist_miles": _calc_auction_dist(
+                    float(row["Latitude"]), float(row["Longitude"]),
+                    str(row.get("Auction Location") or "")
                 ),
                 "equity_pct": _fmt(row.get("Equity %"), decimals=1, na=""),
                 "high_equity": bool(row.get("High Equity") is True),

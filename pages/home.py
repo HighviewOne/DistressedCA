@@ -35,116 +35,16 @@ function(feature, latlng, context) {
 }
 """)
 
-# Popup shown on marker click
+# Simplified: tooltip only — full details open in sidebar on click
 on_each_feature = assign("""
 function(feature, layer, context) {
     var p = feature.properties;
-    var popup = '<div style="min-width:240px;font-size:0.85rem;line-height:1.6">';
-
-    // Header: address + stage badge
-    popup += '<b style="font-size:0.95rem">' + (p.address || 'Address unknown') + '</b><br>';
-    if (p.city) popup += p.city + (p.zip ? '&nbsp;' + p.zip : '') + '<br>';
-    popup += '<span style="background:' + p.color + ';color:#fff;padding:1px 7px;border-radius:3px;font-size:0.75rem;font-weight:bold">' + (p.stage_short || '') + '</span>';
-    if (p.county) popup += ' <span style="font-size:0.8rem;color:#555">' + p.county + '</span>';
-    popup += '<br>';
-
-    // Auction block (NTS only)
-    if (p.sale_date) {
-        popup += '<div style="margin:6px 0;padding:6px 8px;background:#fff1f1;border-left:3px solid #ef4444;border-radius:2px">';
-        popup += '<b style="color:#ef4444">&#127942; Auction: ' + p.sale_date;
-        if (p.sale_time) popup += ' at ' + p.sale_time;
-        popup += '</b>';
-        if (p.auction_location) popup += '<br><span style="font-size:0.78rem">' + p.auction_location + '</span>';
-        if (p.min_bid) popup += '<br>Min Bid: <b>' + p.min_bid + '</b>';
-        popup += '</div>';
-    }
-
-    // Property timeline (APN-grouped multi-stage properties)
-    if (p.timeline && p.timeline.length > 1) {
-        var stageClrs = {1: '#f59e0b', 2: '#ef4444', 3: '#22c55e', 4: '#7c3aed'};
-        var tl = p.timeline;
-        var total = tl.length;
-        var maxShow = 8;
-        // Show oldest + newest events when timeline is long
-        var shown = total <= maxShow ? tl : tl.slice(0, 3).concat(tl.slice(total - 4));
-        popup += '<div style="margin:5px 0;padding:5px 8px;background:#f9fafb;border-left:3px solid #d1d5db;border-radius:2px">';
-        popup += '<b style="font-size:0.75rem;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Timeline (' + total + ' filings)</b><br>';
-        shown.forEach(function(e, i) {
-            if (total > maxShow && i === 3) popup += '<span style="color:#9ca3af;font-size:0.72rem">  ⋯ ' + (total - maxShow + 1) + ' more ⋯</span><br>';
-            var c = stageClrs[e.stage_num] || '#6b7280';
-            popup += '<span style="color:' + c + ';font-size:0.75rem">● ' + e.date + ' — ' + e.stage_short + '</span><br>';
-        });
-        popup += '</div>';
-    }
-
-    // Financial row
-    popup += 'Loan: <b>' + (p.loan_amount || 'N/A') + '</b>';
-    if (p.ltv) popup += ' &nbsp;LTV: <b>' + p.ltv + '</b>';
-    if (p.emv) popup += ' &nbsp;EMV: ' + p.emv;
-    popup += '<br>';
-
-    if (p.default_amount) popup += 'Default Amt: <b>' + p.default_amount + '</b><br>';
-    popup += 'Recorded: ' + (p.recording_date || '') + '<br>';
-    if (p.borrower) popup += 'Borrower: ' + p.borrower + '<br>';
-
-    // Property details
-    if (p.beds || p.baths || p.sqft || p.year_built) {
-        var details = [];
-        if (p.beds) details.push(p.beds + ' bd');
-        if (p.baths) details.push(p.baths + ' ba');
-        if (p.sqft) details.push(p.sqft + ' sqft');
-        if (p.year_built) details.push('Built ' + p.year_built);
-        popup += details.join(' &middot; ') + '<br>';
-    }
-    if (p.assessed_total) popup += 'Assessed: ' + p.assessed_total + '<br>';
-
-    if (p.beneficiary) {
-        popup += 'Lender: ' + p.beneficiary;
-        if (p.ben_phone) popup += ' <a href="tel:' + p.ben_phone + '">' + p.ben_phone + '</a>';
-        popup += '<br>';
-    }
-
-    // Badges
-    var badges = '';
-    if (p.hard_money === 'Yes') badges += '<span style="background:#fbbf24;color:#000;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Hard Money</span>';
-    if (p.corporate === 'Yes') badges += '<span style="background:#6b7280;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Corporate</span>';
-    if (p.source === 'RETRAN') badges += '<span style="background:#3b82f6;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">RETRAN</span>';
-    if (p.high_equity) badges += '<span style="background:#16a34a;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">💰 High Equity ' + (p.equity_pct ? p.equity_pct + '%' : '') + '</span>';
-    if (p.low_ltv) badges += '<span style="background:#2563eb;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem">🔒 Low LTV</span>';
-    if (badges) popup += badges + '<br>';
-
-    // Trustee portal link
-    var trustee_display = p.trustee_name || p.trustee || '';
-    if (trustee_display) {
-        popup += 'Trustee: ';
-        if (p.trustee_url) {
-            popup += '<a href="' + p.trustee_url + '" target="_blank" rel="noopener noreferrer">' + trustee_display + '</a>';
-        } else {
-            popup += trustee_display;
-        }
-        if (p.trustee_phone) popup += ' <a href="tel:' + p.trustee_phone + '">' + p.trustee_phone + '</a>';
-        popup += '<br>';
-    }
-
-    // County recorder link
-    if (p.source_url) popup += '<a href="' + p.source_url + '" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem">County Record ↗</a>  ';
-
-    // One-click research suite
-    if (p.address && p.address !== 'Address unknown') {
-        var full_addr = encodeURIComponent(p.address + ' ' + (p.city || '') + ' CA');
-        var lat = p.lat_val, lon = p.lon_val;
-        popup += '<span style="font-size:0.8rem">';
-        popup += '<a href="https://www.zillow.com/homes/' + full_addr + '_rb/" target="_blank" rel="noopener noreferrer">Zillow</a> · ';
-        popup += '<a href="https://www.redfin.com/search-page?s=' + full_addr + '" target="_blank" rel="noopener noreferrer">Redfin</a>';
-        if (p.lat_val && p.lon_val) {
-            popup += ' · <a href="https://maps.google.com/maps?q=&layer=c&cbll=' + p.lat_val + ',' + p.lon_val + '" target="_blank" rel="noopener noreferrer">Street View</a>';
-        }
-        popup += '</span>';
-    }
-
-    popup += '</div>';
-    layer.bindPopup(popup, {maxWidth: 300});
-    layer.bindTooltip(p.address || 'Click for details', {sticky: true, direction: 'top', offset: [0, -5]});
+    var tip = '<b style="font-size:0.85rem">' + (p.address || 'Unknown') + '</b><br>';
+    tip += '<span style="color:' + p.color + ';font-weight:bold">' + (p.stage_short || '') + '</span>';
+    if (p.county) tip += ' &middot; ' + p.county;
+    if (p.timeline && p.timeline.length > 1)
+        tip += '<br><span style="font-size:0.75rem;color:#9ca3af">' + p.timeline.length + ' filings — click for timeline</span>';
+    layer.bindTooltip(tip, {sticky: true, direction: 'top', offset: [0, -5]});
 }
 """)
 
@@ -154,6 +54,144 @@ LEGEND_ITEMS = [
     ("NOR", "#22c55e", "Notice of Rescission"),
     ("TDUS", "#7c3aed", "Trustee's Deed Upon Sale"),
 ]
+
+
+def _badge(label: str, color: str, text: str = "white") -> dbc.Badge:
+    return dbc.Badge(label, style={"backgroundColor": color, "color": text}, className="me-1")
+
+
+def _section(title: str, children: list) -> html.Div:
+    return html.Div([
+        html.P(title, className="text-uppercase fw-bold mb-1",
+               style={"fontSize": "0.7rem", "letterSpacing": "0.08em", "color": "#9ca3af"}),
+        *children,
+        html.Hr(className="my-2"),
+    ])
+
+
+def _build_sidebar(p: dict) -> list:
+    """Build Offcanvas body from a clicked GeoJSON feature's properties dict."""
+    color      = p.get("color", "#6b7280")
+    stage_short= p.get("stage_short", "")
+    timeline   = p.get("timeline") or []
+
+    sections = []
+
+    # ── Stage badge ───────────────────────────────────────────────────────────
+    badges = [dbc.Badge(stage_short, style={"backgroundColor": color}, className="me-1 mb-2")]
+    if p.get("hard_money") == "Yes": badges.append(_badge("Hard Money", "#fbbf24", "#000"))
+    if p.get("corporate")  == "Yes": badges.append(_badge("Corporate", "#6b7280"))
+    if p.get("source")     == "RETRAN": badges.append(_badge("RETRAN", "#3b82f6"))
+    if p.get("high_equity"): badges.append(_badge(f"💰 High Equity {p.get('equity_pct','')}%", "#16a34a"))
+    if p.get("low_ltv"):    badges.append(_badge("🔒 Low LTV", "#2563eb"))
+    sections.append(html.Div(badges, className="mb-3"))
+
+    # ── Location ──────────────────────────────────────────────────────────────
+    sections.append(html.Div([
+        html.P([p.get("city",""), "  ", p.get("zip",""), " · ", p.get("county","")],
+               className="text-muted small mb-1"),
+        html.P(["Recorded: ", html.Strong(p.get("recording_date",""))], className="small mb-0"),
+    ], className="mb-3"))
+
+    # ── Auction block ─────────────────────────────────────────────────────────
+    if p.get("sale_date"):
+        dist = p.get("auction_dist_miles","")
+        sections.append(dbc.Alert([
+            html.Div([html.Strong(f"🔨 Auction: {p['sale_date']}"),
+                      html.Span(f"  at {p['sale_time']}" if p.get("sale_time") else "")]),
+            html.Div(p.get("auction_location",""), className="small") if p.get("auction_location") else None,
+            html.Div([
+                html.Span(f"Min Bid: {p.get('min_bid','')}", className="me-3 fw-bold") if p.get("min_bid") else None,
+                html.Span(f"📍 {dist} from property", className="text-muted small") if dist else None,
+            ]),
+        ], color="danger", className="mb-3 py-2"))
+
+    # ── Timeline ──────────────────────────────────────────────────────────────
+    if len(timeline) > 1:
+        stage_clrs = {1:"#f59e0b", 2:"#ef4444", 3:"#22c55e", 4:"#7c3aed"}
+        tl_items = []
+        for i, ev in enumerate(timeline):
+            c = stage_clrs.get(ev.get("stage_num", 0), "#6b7280")
+            tl_items.append(html.Div([
+                html.Span("●", style={"color": c, "marginRight": "6px"}),
+                html.Span(ev.get("date",""), className="me-2 text-muted"),
+                html.Span(ev.get("stage_short",""), style={"color": c}),
+            ], className="small"))
+        sections.append(_section(f"Foreclosure Timeline ({len(timeline)} filings)", tl_items))
+
+    # ── Financial ─────────────────────────────────────────────────────────────
+    fin = []
+    if p.get("loan_amount") and p["loan_amount"] != "N/A":
+        fin.append(html.Div([html.Span("Loan Amount: ", className="text-muted small"),
+                              html.Strong(p["loan_amount"])]))
+    for label, key in [("LTV", "ltv"), ("EMV", "emv"), ("Equity", "equity_pct"),
+                        ("Default Amt", "default_amount")]:
+        val = p.get(key,"")
+        if val:
+            fin.append(html.Div([html.Span(f"{label}: ", className="text-muted small"),
+                                  html.Strong(val + ("%" if key == "equity_pct" else ""))]))
+    if fin:
+        sections.append(_section("Financial", fin))
+
+    # ── Property ──────────────────────────────────────────────────────────────
+    prop = []
+    details = " · ".join(filter(None,[
+        (p.get("beds","")  + " bd")   if p.get("beds") else "",
+        (p.get("baths","") + " ba")   if p.get("baths") else "",
+        (p.get("sqft","")  + " sqft") if p.get("sqft") else "",
+        ("Built " + p.get("year_built","")) if p.get("year_built") else "",
+    ]))
+    if details: prop.append(html.P(details, className="small mb-1"))
+    if p.get("assessed_total"):
+        prop.append(html.P(["Assessed: ", html.Strong(p["assessed_total"])], className="small mb-1"))
+    if p.get("borrower"):
+        prop.append(html.P(["Owner: ", p["borrower"]], className="small mb-0"))
+    if prop:
+        sections.append(_section("Property", prop))
+
+    # ── Trustee / Lender ──────────────────────────────────────────────────────
+    tl_items2 = []
+    trustee = p.get("trustee_name") or p.get("trustee","")
+    if trustee:
+        name_el = html.A(trustee, href=p["trustee_url"], target="_blank",
+                         rel="noopener noreferrer") if p.get("trustee_url") else html.Span(trustee)
+        phone_el = [" ", html.A(p["trustee_phone"], href=f"tel:{p['trustee_phone']}")] \
+                   if p.get("trustee_phone") else []
+        tl_items2.append(html.P(["Trustee: ", name_el] + phone_el, className="small mb-1"))
+    if p.get("beneficiary"):
+        phone_el2 = [" ", html.A(p["ben_phone"], href=f"tel:{p['ben_phone']}")] \
+                    if p.get("ben_phone") else []
+        tl_items2.append(html.P(["Lender: ", p["beneficiary"]] + phone_el2, className="small mb-0"))
+    if tl_items2:
+        sections.append(_section("Trustee / Lender", tl_items2))
+
+    # ── Research links ────────────────────────────────────────────────────────
+    addr = p.get("address","")
+    city = p.get("city","")
+    if addr and addr != "Address unknown":
+        from urllib.parse import quote
+        q = quote(f"{addr} {city} CA")
+        lat_v, lon_v = p.get("lat_val",""), p.get("lon_val","")
+        links = [
+            dbc.Button("Zillow", href=f"https://www.zillow.com/homes/{q}_rb/",
+                       target="_blank", color="warning", size="sm", className="me-1 mb-1"),
+            dbc.Button("Redfin", href=f"https://www.redfin.com/search-page?s={q}",
+                       target="_blank", color="danger", size="sm", className="me-1 mb-1"),
+        ]
+        if lat_v and lon_v:
+            links.append(dbc.Button(
+                "Street View",
+                href=f"https://maps.google.com/maps?q=&layer=c&cbll={lat_v},{lon_v}",
+                target="_blank", color="success", size="sm", className="me-1 mb-1"
+            ))
+        if p.get("source_url"):
+            links.append(dbc.Button(
+                "County Record", href=p["source_url"],
+                target="_blank", color="secondary", outline=True, size="sm", className="mb-1"
+            ))
+        sections.append(_section("Research", links))
+
+    return sections
 
 
 def _last_updated() -> str:
@@ -196,6 +234,17 @@ def layout():
 
     return dbc.Container([
         dcc.Store(id="loan-defaults", data={"min": 0, "max": max_loan}),
+
+        # Property detail sidebar
+        dbc.Offcanvas(
+            id="property-sidebar",
+            title="Property Details",
+            placement="end",
+            scrollable=True,
+            is_open=False,
+            style={"width": "380px"},
+            children=[],
+        ),
 
         # Navbar
         dbc.Navbar(
@@ -745,3 +794,22 @@ def export_mailing(n_clicks, counties, stages, date_start, date_end, loan_range,
     out = out[out["Property_Address"].str.strip() != ""]
     filename = f"distressedca_mailing_{date.today()}.csv"
     return dcc.send_data_frame(out.to_csv, filename, index=False)
+
+
+# ── Property detail sidebar ───────────────────────────────────────────────────
+@callback(
+    Output("property-sidebar", "children"),
+    Output("property-sidebar", "title"),
+    Output("property-sidebar", "is_open"),
+    Input("map-layer", "clickData"),
+    prevent_initial_call=True,
+)
+def open_sidebar(click_data):
+    if not click_data:
+        raise PreventUpdate
+    props = click_data.get("properties", {})
+    if not props.get("address"):
+        raise PreventUpdate
+    content = _build_sidebar(props)
+    title   = props.get("address", "Property Details")
+    return content, title, True
