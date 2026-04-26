@@ -24,6 +24,34 @@ STAGE_SHORT = {
     "TDUS — Trustee's Deed Upon Sale": "TDUS",
 }
 
+TRUSTEE_PORTALS: dict[str, str] = {
+    "CLEAR RECON":        "https://clearreconcorp.com/",
+    "TRUSTEE CORPS":      "https://www.trusteecorps.com/",
+    "QUALITY LOAN":       "https://qualityloan.com/",
+    "CALIFORNIA TD":      "https://www.caltd.com/",
+    "WESTERN PROGRESSIVE":"https://westernprogressive.com/",
+    "NATIONAL DEFAULT":   "https://www.ndscal.com/",
+    "ZBS LAW":            "https://zbs-law.com/",
+    "BARRETT DAFFIN":     "https://bdfgroup.com/",
+    "FIRST AMERICAN":     "https://www.firstam.com/",
+    "T.D. SERVICE":       "https://tdsc.com/",
+    "TD SERVICE":         "https://tdsc.com/",
+    "AFFINIA":            "https://www.affiniadefault.com/",
+    "PRESTIGE DEFAULT":   "https://www.prestigedefaultservices.com/",
+    "WITKIN AND NEAL":    "https://www.witkinandneal.com/",
+    "NESTOR SOLUTIONS":   "https://nestorsolutions.com/",
+}
+
+
+def _trustee_portal(name: str) -> str:
+    """Return portal URL for a known CA foreclosure trustee, or empty string."""
+    upper = (name or "").upper()
+    for key, url in TRUSTEE_PORTALS.items():
+        if key in upper:
+            return url
+    return ""
+
+
 _DOC_TO_STAGE = {
     "TR": ("NTS  — Notice of Trustee's Sale", 2),
     "TD": ("TDUS — Trustee's Deed Upon Sale", 4),
@@ -371,6 +399,11 @@ def to_geojson(df: pd.DataFrame) -> dict:
                 "trustee_phone": str(row.get("Trustee Phone") or "").strip(),
                 "beneficiary": str(row.get("Beneficiary") or "").strip(),
                 "ben_phone": str(row.get("Ben Phone") or "").strip(),
+                "lat_val": float(row["Latitude"]),
+                "lon_val": float(row["Longitude"]),
+                "trustee_url": _trustee_portal(
+                    str(row.get("Trustee Name") or row.get("Trustee/Lender") or "")
+                ),
                 "equity_pct": _fmt(row.get("Equity %"), decimals=1, na=""),
                 "high_equity": bool(row.get("High Equity") is True),
                 "low_ltv": bool(row.get("Low LTV") is True),

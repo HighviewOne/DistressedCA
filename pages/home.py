@@ -80,14 +80,6 @@ function(feature, layer, context) {
     }
     if (p.assessed_total) popup += 'Assessed: ' + p.assessed_total + '<br>';
 
-    // Trustee / beneficiary
-    if (p.trustee_name && p.trustee_name !== p.trustee) {
-        popup += 'Trustee: ' + p.trustee_name;
-        if (p.trustee_phone) popup += ' <a href="tel:' + p.trustee_phone + '">' + p.trustee_phone + '</a>';
-        popup += '<br>';
-    } else if (p.trustee) {
-        popup += 'Trustee: ' + p.trustee + '<br>';
-    }
     if (p.beneficiary) {
         popup += 'Lender: ' + p.beneficiary;
         if (p.ben_phone) popup += ' <a href="tel:' + p.ben_phone + '">' + p.ben_phone + '</a>';
@@ -103,7 +95,35 @@ function(feature, layer, context) {
     if (p.low_ltv) badges += '<span style="background:#2563eb;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem">🔒 Low LTV</span>';
     if (badges) popup += badges + '<br>';
 
-    if (p.source_url) popup += '<a href="' + p.source_url + '" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem">View County Record ↗</a>';
+    // Trustee portal link
+    var trustee_display = p.trustee_name || p.trustee || '';
+    if (trustee_display) {
+        popup += 'Trustee: ';
+        if (p.trustee_url) {
+            popup += '<a href="' + p.trustee_url + '" target="_blank" rel="noopener noreferrer">' + trustee_display + '</a>';
+        } else {
+            popup += trustee_display;
+        }
+        if (p.trustee_phone) popup += ' <a href="tel:' + p.trustee_phone + '">' + p.trustee_phone + '</a>';
+        popup += '<br>';
+    }
+
+    // County recorder link
+    if (p.source_url) popup += '<a href="' + p.source_url + '" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem">County Record ↗</a>  ';
+
+    // One-click research suite
+    if (p.address && p.address !== 'Address unknown') {
+        var full_addr = encodeURIComponent(p.address + ' ' + (p.city || '') + ' CA');
+        var lat = p.lat_val, lon = p.lon_val;
+        popup += '<span style="font-size:0.8rem">';
+        popup += '<a href="https://www.zillow.com/homes/' + full_addr + '_rb/" target="_blank" rel="noopener noreferrer">Zillow</a> · ';
+        popup += '<a href="https://www.redfin.com/search-page?s=' + full_addr + '" target="_blank" rel="noopener noreferrer">Redfin</a>';
+        if (p.lat_val && p.lon_val) {
+            popup += ' · <a href="https://maps.google.com/maps?q=&layer=c&cbll=' + p.lat_val + ',' + p.lon_val + '" target="_blank" rel="noopener noreferrer">Street View</a>';
+        }
+        popup += '</span>';
+    }
+
     popup += '</div>';
     layer.bindPopup(popup, {maxWidth: 300});
     layer.bindTooltip(p.address || 'Click for details', {sticky: true, direction: 'top', offset: [0, -5]});

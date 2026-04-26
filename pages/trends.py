@@ -98,6 +98,16 @@ def layout():
                     ]),
                 ], lg=12, className="mb-3"),
             ]),
+
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader(html.H6("Foreclosure Density Map", className="mb-0 fw-bold")),
+                        dbc.CardBody(dcc.Graph(id="chart-density", config={"displayModeBar": False},
+                                               style={"height": "500px"})),
+                    ]),
+                ], lg=12, className="mb-3"),
+            ]),
         ], fluid=True),
     ], fluid=True, className="p-0")
 
@@ -107,6 +117,7 @@ def layout():
     Output("chart-counties", "figure"),
     Output("chart-stages",   "figure"),
     Output("chart-weekly",   "figure"),
+    Output("chart-density",  "figure"),
     Input("trends-county-filter", "value"),
 )
 def update_charts(counties):
@@ -199,4 +210,26 @@ def update_charts(counties):
         hovermode="x unified",
     )
 
-    return fig_monthly, fig_counties, fig_stages, fig_weekly
+    # ── Density heatmap ───────────────────────────────────────────────────────
+    geo = df.dropna(subset=["Latitude", "Longitude"]).copy()
+    geo["Stage Short"] = geo["Stage"].map(STAGE_SHORT).fillna("Other")
+    fig_density = px.density_map(
+        geo,
+        lat="Latitude", lon="Longitude",
+        z=None,  # uniform intensity — pure density
+        radius=12,
+        center={"lat": 36.8, "lon": -119.4},
+        zoom=5,
+        map_style="carto-positron",
+        color_continuous_scale="Reds",
+        hover_name="Property Address",
+        hover_data={"Latitude": False, "Longitude": False, "Stage Short": True, "County": True},
+        title=None,
+        height=500,
+    )
+    fig_density.update_layout(
+        margin=dict(t=10, b=10, l=10, r=10),
+        coloraxis_showscale=False,
+    )
+
+    return fig_monthly, fig_counties, fig_stages, fig_weekly, fig_density
