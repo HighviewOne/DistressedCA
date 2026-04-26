@@ -116,7 +116,7 @@ LEGEND_ITEMS = [
 def layout():
     df = load_df()
     all_counties = sorted(df["County"].dropna().unique().tolist())
-    all_stages = df["Stage"].dropna().unique().tolist()
+    all_stages = [s for s in df["Stage"].dropna().unique().tolist() if s.strip() and s in STAGE_COLORS]
     max_loan = int(df["Loan Amount"].max(skipna=True) or 5_000_000)
     min_date = df["Recording Date"].min()
     max_date = df["Recording Date"].max()
@@ -376,9 +376,10 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags):
                 html.Span(f"{upcoming:,} properties with scheduled auction", className="text-danger fw-semibold"),
             ], className="small"))
 
-    # Table
-    records = to_table_records(filtered)
-    table_count_text = f"(showing {min(len(records), 500):,} of {total_count:,})"
+    # Table — only show records that are on the map (geocoded)
+    on_map = filtered.dropna(subset=["Latitude", "Longitude"])
+    records = to_table_records(on_map)
+    table_count_text = f"(showing {min(len(records), 500):,} of {geocoded_count:,} on map)"
     if not records:
         table = html.P("No records match the current filters.", className="text-muted small p-3 mb-0")
     else:
