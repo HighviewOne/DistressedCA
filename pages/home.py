@@ -9,7 +9,8 @@ from data.loader import (
     STAGE_COLORS, STAGE_SHORT,
 )
 import pandas as pd
-from datetime import date
+from datetime import date, datetime, timezone
+import os
 
 dash.register_page(
     __name__,
@@ -115,6 +116,23 @@ LEGEND_ITEMS = [
 ]
 
 
+def _last_updated() -> str:
+    """Human-readable age of the Parquet snapshot."""
+    try:
+        from data.loader import PARQUET_SNAPSHOT
+        mtime = os.path.getmtime(PARQUET_SNAPSHOT)
+        age = datetime.now() - datetime.fromtimestamp(mtime)
+        hours = int(age.total_seconds() // 3600)
+        if hours < 1:
+            return "Updated < 1 hour ago"
+        if hours < 24:
+            return f"Updated {hours}h ago"
+        days = hours // 24
+        return f"Updated {days}d ago"
+    except Exception:
+        return ""
+
+
 def layout():
     df = load_df()
     all_counties = sorted(df["County"].dropna().unique().tolist())
@@ -137,6 +155,8 @@ def layout():
         })
 
     return dbc.Container([
+        dcc.Store(id="loan-defaults", data={"min": 0, "max": max_loan}),
+
         # Navbar
         dbc.Navbar(
             dbc.Container([
@@ -158,12 +178,30 @@ def layout():
             color="dark", dark=True, sticky="top", className="mb-0 py-1",
         ),
 
+        # Mobile filter toggle (hidden on desktop)
+        dbc.Row(dbc.Col(
+            dbc.Button(
+                [html.I(className="bi bi-sliders me-2"), "Filters"],
+                id="filter-toggle-btn",
+                color="secondary", outline=True, size="sm",
+                className="d-lg-none w-100 mb-2",
+            ),
+        ), className="px-2"),
+
         # Main layout: sidebar + content
         dbc.Row([
             # --- Filters sidebar ---
             dbc.Col([
+                dbc.Collapse(id="filter-collapse", is_open=True, children=[
                 dbc.Card([
-                    dbc.CardHeader(html.H6("Filters", className="mb-0 fw-bold")),
+                    dbc.CardHeader([
+                        html.H6("Filters", className="mb-0 fw-bold d-inline"),
+                        dbc.Button(
+                            [html.I(className="bi bi-arrow-counterclockwise me-1"), "Reset"],
+                            id="reset-filters-btn", size="sm", color="link",
+                            className="float-end p-0 text-muted",
+                        ),
+                    ]),
                     dbc.CardBody([
 
                         # Stage
@@ -239,9 +277,17 @@ def layout():
 
                 # Stats card
                 dbc.Card([
-                    dbc.CardHeader(html.H6("Results", className="mb-0 fw-bold")),
+                    dbc.CardHeader([
+                        html.H6("Results", className="mb-0 fw-bold d-inline"),
+                        html.Span(
+                            _last_updated(),
+                            className="float-end small text-muted fst-italic",
+                            style={"fontSize": "0.7rem", "lineHeight": "1.8"},
+                        ),
+                    ]),
                     dbc.CardBody(html.Div(id="stats-panel", className="small")),
                 ]),
+                ]),  # end Collapse
             ], lg=3, md=12, className="p-2"),
 
             # --- Map + Table ---
@@ -251,6 +297,7 @@ def layout():
 
                 # Map card
                 dbc.Card([
+                    dcc.Loading(type="circle", color="#ef4444", children=
                     dl.Map(
                         id="main-map",
                         center=[36.8, -119.4],
@@ -286,6 +333,7 @@ def layout():
                             ),
                         ],
                     ),
+                    ),  # end dcc.Loading
                 ], className="mb-1 p-0 border-0 overflow-hidden"),
 
                 # Legend
@@ -311,7 +359,9 @@ def layout():
                         ),
                     ]),
                     dbc.CardBody(
-                        html.Div(id="table-container", style={"overflowX": "auto"}),
+                        dcc.Loading(type="dot", color="#ef4444",
+                            children=html.Div(id="table-container", style={"overflowX": "auto"}),
+                        ),
                         className="p-1",
                     ),
                 ]),
@@ -481,6 +531,59 @@ def export_csv(n_clicks, counties, stages, date_start, date_end, loan_range, fla
         upcoming_auctions=upcoming,
     )
     on_map = filtered.dropna(subset=["Latitude", "Longitude"])
-    export_df = pd.DataFrame(to_table_records(on_map, max_rows=99_999))
+    export_cols = [
+        "Recording Date", "Property Address", "City", "ZIP", "County", "Stage",
+        "Loan Amount", "Sale Date", "Min Bid", "Auction Location", "LTV",
+        "Borrower Name", "Trustee/Lender", "Trustee Name", "Trustee Phone",
+        "Beneficiary", "Ben Phone", "Hard Money Loan?", "Corporate Grantor?",
+        "Beds", "Baths", "Sq Ft", "Year Built",
+        "Assessed Total($)", "Latitude", "Longitude", "Source URL", "Source",
+    ]
+    available = [c for c in export_cols if c in on_map.columns]
+    export_df = on_map[available].copy()
+    # Clean dates to ISO strings, leave numbers raw
+    for col in ["Recording Date", "Sale Date"]:
+        if col in export_df.columns:
+            export_df[col] = export_df[col].apply(
+                lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else ""
+            )
     filename = f"distressedca_{date.today()}.csv"
     return dcc.send_data_frame(export_df.to_csv, filename, index=False)
+
+
+# ── Mobile sidebar toggle ─────────────────────────────────────────────────────
+@callback(
+    Output("filter-collapse", "is_open"),
+    Input("filter-toggle-btn", "n_clicks"),
+    State("filter-collapse", "is_open"),
+    prevent_initial_call=True,
+)
+def toggle_sidebar(n_clicks, is_open):
+    return not is_open
+
+
+# ── Reset all filters to defaults ─────────────────────────────────────────────
+@callback(
+    Output("stage-filter",  "value"),
+    Output("county-filter", "value"),
+    Output("date-filter",   "start_date"),
+    Output("date-filter",   "end_date"),
+    Output("flag-filter",   "value"),
+    Input("reset-filters-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def reset_filters(_):
+    df = load_df()
+    all_stages = [s for s in df["Stage"].dropna().unique().tolist()
+                  if s.strip() and s in STAGE_COLORS]
+    return all_stages, [], None, None, []
+
+
+@callback(
+    Output("loan-slider", "value"),
+    Input("reset-filters-btn", "n_clicks"),
+    State("loan-defaults", "data"),
+    prevent_initial_call=True,
+)
+def reset_loan_slider(_, defaults):
+    return [defaults["min"], defaults["max"]]
