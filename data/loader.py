@@ -195,7 +195,7 @@ def load_df() -> pd.DataFrame:
         df["Min Bid"] = pd.to_numeric(df["Min Bid"], errors="coerce")
         df["LTV"] = pd.to_numeric(df["LTV"], errors="coerce")
         df["EMV"] = pd.to_numeric(df["EMV"], errors="coerce")
-        return df
+        return _add_investor_flags(df)
 
     # Dev fallback: build from raw Excel + RETRAN CSVs
     master = pd.read_excel(NOD_MASTER)
@@ -247,7 +247,25 @@ def load_df() -> pd.DataFrame:
             master[col] = None
 
     master["Sale Date"] = pd.to_datetime(master["Sale Date"], errors="coerce")
-    return master
+    return _add_investor_flags(master)
+
+
+def _add_investor_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute Equity % and boolean investor flags from EMV/Assessed + Loan."""
+    emv     = pd.to_numeric(df.get("EMV",              pd.Series(dtype=float)), errors="coerce")
+    assessed= pd.to_numeric(df.get("Assessed Total($)",pd.Series(dtype=float)), errors="coerce")
+    loan    = pd.to_numeric(df.get("Loan Amount",      pd.Series(dtype=float)), errors="coerce")
+    ltv_col = pd.to_numeric(df.get("LTV",              pd.Series(dtype=float)), errors="coerce")
+
+    # Use EMV if available (RETRAN), fall back to assessor value
+    valuation = emv.where(emv > 0).fillna(assessed.where(assessed > 0))
+    equity_pct = ((valuation - loan) / valuation * 100).round(1)
+
+    df = df.copy()
+    df["Equity %"]   = equity_pct
+    df["High Equity"]= equity_pct > 30
+    df["Low LTV"]    = ltv_col.between(0.1, 49.9, inclusive="both")
+    return df
 
 
 def filter_df(
@@ -261,6 +279,8 @@ def filter_df(
     loan_min=None,
     loan_max=None,
     upcoming_auctions=False,
+    high_equity=False,
+    low_ltv=False,
 ) -> pd.DataFrame:
     if counties:
         df = df[df["County"].isin(counties)]
@@ -280,6 +300,10 @@ def filter_df(
         df = df[df["Loan Amount"].isna() | (df["Loan Amount"] <= loan_max)]
     if upcoming_auctions:
         df = df[df["Sale Date"].notna() & (df["Sale Date"] >= pd.Timestamp("today"))]
+    if high_equity:
+        df = df[df.get("High Equity", pd.Series(False, index=df.index)) == True]
+    if low_ltv:
+        df = df[df.get("Low LTV", pd.Series(False, index=df.index)) == True]
     return df
 
 
@@ -347,6 +371,9 @@ def to_geojson(df: pd.DataFrame) -> dict:
                 "trustee_phone": str(row.get("Trustee Phone") or "").strip(),
                 "beneficiary": str(row.get("Beneficiary") or "").strip(),
                 "ben_phone": str(row.get("Ben Phone") or "").strip(),
+                "equity_pct": _fmt(row.get("Equity %"), decimals=1, na=""),
+                "high_equity": bool(row.get("High Equity") is True),
+                "low_ltv": bool(row.get("Low LTV") is True),
             },
         })
     return {"type": "FeatureCollection", "features": features}
@@ -356,7 +383,8 @@ def to_table_records(df: pd.DataFrame, max_rows: int = 500) -> list[dict]:
     cols = [
         "Recording Date", "Property Address", "City", "County", "Stage",
         "Loan Amount", "Sale Date", "Min Bid", "Auction Location",
-        "LTV", "Borrower Name", "Trustee/Lender",
+        "LTV", "Equity %", "High Equity", "Low LTV",
+        "Borrower Name", "Trustee/Lender",
         "Hard Money Loan?", "Beds", "Baths", "Sq Ft", "Source",
     ]
     available = [c for c in cols if c in df.columns]

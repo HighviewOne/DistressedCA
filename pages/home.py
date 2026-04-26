@@ -98,7 +98,9 @@ function(feature, layer, context) {
     var badges = '';
     if (p.hard_money === 'Yes') badges += '<span style="background:#fbbf24;color:#000;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Hard Money</span>';
     if (p.corporate === 'Yes') badges += '<span style="background:#6b7280;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Corporate</span>';
-    if (p.source === 'RETRAN') badges += '<span style="background:#3b82f6;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem">RETRAN</span>';
+    if (p.source === 'RETRAN') badges += '<span style="background:#3b82f6;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">RETRAN</span>';
+    if (p.high_equity) badges += '<span style="background:#16a34a;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">💰 High Equity ' + (p.equity_pct ? p.equity_pct + '%' : '') + '</span>';
+    if (p.low_ltv) badges += '<span style="background:#2563eb;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem">🔒 Low LTV</span>';
     if (badges) popup += badges + '<br>';
 
     if (p.source_url) popup += '<a href="' + p.source_url + '" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem">View County Record ↗</a>';
@@ -267,6 +269,14 @@ def layout():
                                     html.Span("Upcoming Auctions Only ", style={"color": "#ef4444", "fontWeight": "600"}),
                                     html.Span("(NTS with sale date)", className="text-muted"),
                                 ]), "value": "upcoming_auctions"},
+                                {"label": html.Span([
+                                    html.Span("💰 High Equity ", style={"color": "#16a34a", "fontWeight": "600"}),
+                                    html.Span("(EMV − Loan > 30%)", className="text-muted"),
+                                ]), "value": "high_equity"},
+                                {"label": html.Span([
+                                    html.Span("🔒 Low LTV ", style={"color": "#2563eb", "fontWeight": "600"}),
+                                    html.Span("(< 50%)", className="text-muted"),
+                                ]), "value": "low_ltv"},
                             ],
                             value=[],
                             switch=True,
@@ -355,7 +365,14 @@ def layout():
                         dbc.Button(
                             [html.I(className="bi bi-download me-1"), "Export CSV"],
                             id="export-btn", size="sm", color="secondary",
-                            outline=True, className="float-end",
+                            outline=True, className="float-end ms-2",
+                        ),
+                        dbc.Switch(
+                            id="bounds-filter-switch",
+                            label="Current map view only",
+                            value=False,
+                            className="float-end small mt-1",
+                            style={"fontSize": "0.8rem"},
                         ),
                     ]),
                     dbc.CardBody(
@@ -382,13 +399,19 @@ def layout():
     Input("date-filter", "end_date"),
     Input("loan-slider", "value"),
     Input("flag-filter", "value"),
+    Input("bounds-filter-switch", "value"),
+    Input("main-map", "center"),
+    Input("main-map", "zoom"),
 )
-def update_all(counties, stages, date_start, date_end, loan_range, flags):
+def update_all(counties, stages, date_start, date_end, loan_range, flags,
+               bounds_active, map_center, map_zoom):
     df = load_df()
 
-    hard_money = "hard_money" in (flags or [])
-    corporate = "corporate" in (flags or [])
-    upcoming_auctions = "upcoming_auctions" in (flags or [])
+    hard_money       = "hard_money"       in (flags or [])
+    corporate        = "corporate"        in (flags or [])
+    upcoming_auctions= "upcoming_auctions"in (flags or [])
+    high_equity      = "high_equity"      in (flags or [])
+    low_ltv          = "low_ltv"          in (flags or [])
     loan_min = loan_range[0] if loan_range else None
     loan_max = loan_range[1] if loan_range else None
 
@@ -403,6 +426,8 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags):
         loan_min=loan_min,
         loan_max=loan_max,
         upcoming_auctions=upcoming_auctions,
+        high_equity=high_equity,
+        low_ltv=low_ltv,
     )
 
     geojson = to_geojson(filtered)
@@ -452,8 +477,23 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags):
 
     # Table — only show records that are on the map (geocoded)
     on_map = filtered.dropna(subset=["Latitude", "Longitude"])
-    records = to_table_records(on_map)
-    table_count_text = f"(showing {min(len(records), 500):,} of {geocoded_count:,} on map)"
+
+    # Bounds filter: restrict table (not map) to current viewport
+    table_df = on_map
+    if bounds_active and map_center and map_zoom is not None:
+        lat, lon = map_center
+        # Approximate visible span: generous (4× tile width) to avoid clipping edges
+        lon_span = (360 / (2 ** int(map_zoom))) * 4
+        lat_span = lon_span * 0.65
+        table_df = on_map[
+            on_map["Latitude"].between(lat - lat_span / 2, lat + lat_span / 2) &
+            on_map["Longitude"].between(lon - lon_span / 2, lon + lon_span / 2)
+        ]
+
+    records = to_table_records(table_df)
+    visible_count = len(table_df)
+    suffix = " in view" if bounds_active else " on map"
+    table_count_text = f"(showing {min(len(records), 500):,} of {visible_count:,}{suffix})"
     if not records:
         table = html.P("No records match the current filters.", className="text-muted small p-3 mb-0")
     else:
@@ -492,6 +532,16 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags):
                 {
                     "if": {"row_index": "odd"},
                     "backgroundColor": "#fafafa",
+                },
+                {
+                    "if": {"filter_query": "{High Equity} = True"},
+                    "backgroundColor": "#f0fdf4",
+                    "borderLeft": "3px solid #16a34a",
+                },
+                {
+                    "if": {"filter_query": "{Low LTV} = True"},
+                    "backgroundColor": "#eff6ff",
+                    "borderLeft": "3px solid #2563eb",
                 },
             ],
             style_filter={"backgroundColor": "#f8fafc"},

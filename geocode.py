@@ -1,13 +1,14 @@
 """
-Geocode missing addresses in SoCal_NOD_Master.xlsx using the US Census Geocoder.
+Geocode missing addresses in SoCal_NOD_Master.xlsx.
 
-The Census batch geocoder is completely free — no API key, no account needed.
-Batch limit: 10,000 records per request.
+Pass 1 — US Census Batch Geocoder (free, no key, ~87% match rate on US addresses)
+Pass 2 — Nominatim / OpenStreetMap fallback for Census misses (1 req/sec, free)
 
 Usage:
-    python geocode.py                # dry run, shows stats
-    python geocode.py --run          # geocodes and saves results
-    python geocode.py --run --limit 1000   # geocode first 1000 missing records
+    python geocode.py                          # dry run, shows stats
+    python geocode.py --run                    # Census + Nominatim fallback
+    python geocode.py --run --skip-nominatim   # Census only (faster)
+    python geocode.py --run --limit 1000       # first 1000 missing records
 """
 
 import argparse
@@ -78,7 +79,46 @@ def parse_coords(results: pd.DataFrame) -> dict[int, tuple[float, float]]:
     return coord_map
 
 
-def geocode_all(df: pd.DataFrame, limit: int | None = None) -> dict[int, tuple[float, float]]:
+def nominatim_fallback(
+    batch_df: pd.DataFrame,
+    matched_ids: set,
+) -> dict[int, tuple[float, float]]:
+    """Try Nominatim (OSM) for addresses Census failed to match. Max 1 req/sec."""
+    unmatched = batch_df[~batch_df["id"].astype(int).isin(matched_ids)]
+    if unmatched.empty:
+        return {}
+
+    print(f"  Nominatim fallback: {len(unmatched):,} unmatched addresses (1 req/sec)...")
+    coords: dict[int, tuple[float, float]] = {}
+    for i, (_, row) in enumerate(unmatched.iterrows()):
+        query = f"{row['street']}, {row['city']}, CA {row['zip']}"
+        try:
+            r = requests.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": query, "format": "json", "limit": 1, "countrycodes": "US"},
+                headers={"User-Agent": "DistressedCA/1.0 (distressedca.onrender.com)"},
+                timeout=10,
+            )
+            data = r.json()
+            if data:
+                lat, lon = float(data[0]["lat"]), float(data[0]["lon"])
+                # Sanity check: must be in California
+                if 32 <= lat <= 42 and -125 <= lon <= -114:
+                    coords[int(row["id"])] = (lat, lon)
+        except Exception:
+            pass
+        time.sleep(1.1)  # Nominatim TOS: max 1 request/second
+        if (i + 1) % 50 == 0:
+            print(f"    [{i+1}/{len(unmatched)}] Nominatim matched {len(coords):,} so far")
+
+    return coords
+
+
+def geocode_all(
+    df: pd.DataFrame,
+    limit: int | None = None,
+    skip_nominatim: bool = False,
+) -> dict[int, tuple[float, float]]:
     """Geocode all rows missing lat/lon. Returns index → (lat, lon)."""
     missing = df[df["Latitude"].isna() & df["Property Address"].notna()].copy()
     if limit:
@@ -102,19 +142,28 @@ def geocode_all(df: pd.DataFrame, limit: int | None = None) -> dict[int, tuple[f
             matched_count = len(coords)
             print(f"matched {matched_count:,} ({matched_count/addressable*100:.0f}%)")
             all_coords.update(coords)
+
+            # Nominatim fallback for Census misses in this batch
+            if not skip_nominatim:
+                nom_coords = nominatim_fallback(batch_df, set(all_coords.keys()))
+                if nom_coords:
+                    print(f"  Nominatim recovered {len(nom_coords):,} additional addresses")
+                all_coords.update(nom_coords)
+
         except Exception as exc:
             print(f"ERROR: {exc}")
 
         if start + BATCH_SIZE < total_missing:
-            time.sleep(1)  # be polite to the Census server
+            time.sleep(1)
 
     return all_coords
 
 
 def main():
     parser = argparse.ArgumentParser(description="Geocode missing addresses via US Census Geocoder")
-    parser.add_argument("--run", action="store_true", help="Actually geocode and save (default: dry run)")
-    parser.add_argument("--limit", type=int, default=None, help="Max records to geocode")
+    parser.add_argument("--run",             action="store_true", help="Actually geocode and save (default: dry run)")
+    parser.add_argument("--limit",           type=int, default=None, help="Max records to geocode")
+    parser.add_argument("--skip-nominatim",  action="store_true", help="Skip Nominatim fallback (Census only, faster)")
     args = parser.parse_args()
 
     print(f"Loading {NOD_MASTER}...")
@@ -140,7 +189,7 @@ def main():
         sys.exit(0)
 
     print("\nStarting geocoding...")
-    coord_map = geocode_all(df, limit=args.limit)
+    coord_map = geocode_all(df, limit=args.limit, skip_nominatim=args.skip_nominatim)
     print(f"\nTotal matched: {len(coord_map):,}")
 
     # Apply results back to the DataFrame
