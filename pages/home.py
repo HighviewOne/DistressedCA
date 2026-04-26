@@ -59,6 +59,24 @@ function(feature, layer, context) {
         popup += '</div>';
     }
 
+    // Property timeline (APN-grouped multi-stage properties)
+    if (p.timeline && p.timeline.length > 1) {
+        var stageClrs = {1: '#f59e0b', 2: '#ef4444', 3: '#22c55e', 4: '#7c3aed'};
+        var tl = p.timeline;
+        var total = tl.length;
+        var maxShow = 8;
+        // Show oldest + newest events when timeline is long
+        var shown = total <= maxShow ? tl : tl.slice(0, 3).concat(tl.slice(total - 4));
+        popup += '<div style="margin:5px 0;padding:5px 8px;background:#f9fafb;border-left:3px solid #d1d5db;border-radius:2px">';
+        popup += '<b style="font-size:0.75rem;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em">Timeline (' + total + ' filings)</b><br>';
+        shown.forEach(function(e, i) {
+            if (total > maxShow && i === 3) popup += '<span style="color:#9ca3af;font-size:0.72rem">  ⋯ ' + (total - maxShow + 1) + ' more ⋯</span><br>';
+            var c = stageClrs[e.stage_num] || '#6b7280';
+            popup += '<span style="color:' + c + ';font-size:0.75rem">● ' + e.date + ' — ' + e.stage_short + '</span><br>';
+        });
+        popup += '</div>';
+    }
+
     // Financial row
     popup += 'Loan: <b>' + (p.loan_amount || 'N/A') + '</b>';
     if (p.ltv) popup += ' &nbsp;LTV: <b>' + p.ltv + '</b>';
@@ -324,6 +342,7 @@ def layout():
             dbc.Col([
                 # Download component (invisible, triggered by callback)
                 dcc.Download(id="download-csv"),
+                dcc.Download(id="download-mailing"),
 
                 # Map card
                 dbc.Card([
@@ -382,6 +401,11 @@ def layout():
                     dbc.CardHeader([
                         html.H6("Property Records", className="mb-0 fw-bold d-inline"),
                         html.Span(id="table-count", className="ms-2 small text-muted"),
+                        dbc.Button(
+                            [html.I(className="bi bi-envelope me-1"), "Mailing CSV"],
+                            id="mailing-btn", size="sm", color="primary",
+                            outline=True, className="float-end ms-2",
+                        ),
                         dbc.Button(
                             [html.I(className="bi bi-download me-1"), "Export CSV"],
                             id="export-btn", size="sm", color="secondary",
@@ -465,11 +489,11 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags,
         dbc.Row([
             dbc.Col(html.Div([
                 html.Span(f"{total_count:,}", className="fw-bold fs-4 text-primary"),
-                html.Div("total records", className="text-muted" ),
+                html.Div("total filings", className="text-muted"),
             ]), width=6),
             dbc.Col(html.Div([
                 html.Span(f"{geocoded_count:,}", className="fw-bold fs-4"),
-                html.Div("on map", className="text-muted"),
+                html.Div("unique properties", className="text-muted"),
             ]), width=6),
         ], className="mb-2 text-center"),
         html.Hr(className="my-1"),
@@ -657,3 +681,67 @@ def reset_filters(_):
 )
 def reset_loan_slider(_, defaults):
     return [defaults["min"], defaults["max"]]
+
+
+@callback(
+    Output("download-mailing", "data"),
+    Input("mailing-btn", "n_clicks"),
+    State("county-filter", "value"),
+    State("stage-filter", "value"),
+    State("date-filter", "start_date"),
+    State("date-filter", "end_date"),
+    State("loan-slider", "value"),
+    State("flag-filter", "value"),
+    prevent_initial_call=True,
+)
+def export_mailing(n_clicks, counties, stages, date_start, date_end, loan_range, flags):
+    if not n_clicks:
+        raise PreventUpdate
+    df = load_df()
+    filtered = filter_df(
+        df,
+        counties=counties or None,
+        stages=stages or None,
+        date_start=date_start,
+        date_end=date_end,
+        hard_money="hard_money" in (flags or []),
+        corporate="corporate" in (flags or []),
+        loan_min=loan_range[0] if loan_range else None,
+        loan_max=loan_range[1] if loan_range else None,
+        upcoming_auctions="upcoming_auctions" in (flags or []),
+        high_equity="high_equity" in (flags or []),
+        low_ltv="low_ltv" in (flags or []),
+    )
+    # Mailing list uses all filtered records (not just geocoded) — broader reach
+    mailing = filtered.copy()
+
+    # Clean borrower name: strip lender prefix where possible
+    def _clean_owner(name):
+        name = str(name or "").strip()
+        # Remove common lender/servicer prefixes (e.g. "GOODLEAP LLC GARCIA JUAN" → "GARCIA JUAN")
+        import re as _re
+        m = _re.search(
+            r'(?:LLC|INC\.?|CORP(?:ORATION)?|CREDIT\s+UNION|SERVICES?)\s+(.{4,})$',
+            name, _re.I
+        )
+        return m.group(1).strip() if m else name
+
+    out = pd.DataFrame({
+        "Owner_Name":       mailing["Borrower Name"].apply(_clean_owner),
+        "Property_Address": mailing["Property Address"].fillna(""),
+        "Property_City":    mailing["City"].fillna(""),
+        "Property_State":   "CA",
+        "Property_ZIP":     mailing["ZIP"].fillna("").astype(str).str.split(".").str[0],
+        "County":           mailing["County"].fillna(""),
+        "Stage":            mailing["Stage"].fillna(""),
+        "Recording_Date":   mailing["Recording Date"].apply(
+            lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else ""
+        ),
+        "Loan_Amount":      mailing["Loan Amount"].fillna(""),
+        "APN":              mailing["APN"].fillna(""),
+        "Hard_Money":       mailing["Hard Money Loan?"].fillna(""),
+    })
+    # Drop rows with no address (useless for mailing)
+    out = out[out["Property_Address"].str.strip() != ""]
+    filename = f"distressedca_mailing_{date.today()}.csv"
+    return dcc.send_data_frame(out.to_csv, filename, index=False)

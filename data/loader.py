@@ -347,8 +347,64 @@ def _fmt(val, prefix="", suffix="", decimals=0, na=""):
         return str(val).strip() or na
 
 
+_STAGE_PRIORITY = {
+    "NTS  — Notice of Trustee's Sale": 0,   # most urgent first
+    "NOD  — Notice of Default": 1,
+    "NOR  — Notice of Rescission": 2,
+    "TDUS — Trustee's Deed Upon Sale": 3,
+}
+
+
+def _group_by_apn(geo: pd.DataFrame) -> pd.DataFrame:
+    """
+    Consolidate multi-filing records into one row per unique property using APN.
+    Attaches a '_timeline' list to each primary row. Records with no APN pass through.
+    """
+    geo = geo.copy()
+    geo["_apn_key"] = geo["APN"].apply(_norm_apn)
+
+    has_apn = geo[geo["_apn_key"] != ""]
+    no_apn  = geo[geo["_apn_key"] == ""].copy()
+    no_apn["_timeline"] = [[] for _ in range(len(no_apn))]
+
+    primaries = []
+    for apn_key, group in has_apn.groupby("_apn_key", observed=True, sort=False):
+        # Deduplicate same (stage + date) within the APN
+        group = group.drop_duplicates(subset=["Stage", "Recording Date"]).copy()
+
+        # Build chronological timeline from dated events
+        dated = group.dropna(subset=["Recording Date"]).sort_values("Recording Date")
+        timeline = [
+            {
+                "date": str(r["Recording Date"])[:10],
+                "stage": str(r.get("Stage") or ""),
+                "stage_short": STAGE_SHORT.get(str(r.get("Stage") or ""), ""),
+                "stage_num": int(r.get("Stage #") or 0),
+            }
+            for _, r in dated.iterrows()
+        ]
+
+        # Pick primary: most urgent stage, then most recent date
+        group["_priority"] = group["Stage"].map(_STAGE_PRIORITY).fillna(9)
+        primary = (
+            group.sort_values(["_priority", "Recording Date"], ascending=[True, False])
+            .iloc[0]
+            .to_dict()
+        )
+        primary["_timeline"] = timeline
+        primaries.append(primary)
+
+    grouped = pd.DataFrame(primaries) if primaries else pd.DataFrame()
+    if "_priority" in grouped.columns:
+        grouped = grouped.drop(columns=["_priority"])
+
+    parts = [p for p in [grouped, no_apn] if not p.empty]
+    result = pd.concat(parts, ignore_index=True) if parts else geo
+    return result.drop(columns=["_apn_key"], errors="ignore")
+
+
 def to_geojson(df: pd.DataFrame) -> dict:
-    geo = df.dropna(subset=["Latitude", "Longitude"])
+    geo = _group_by_apn(df.dropna(subset=["Latitude", "Longitude"]))
     features = []
     for _, row in geo.iterrows():
         stage = str(row.get("Stage") or "")
@@ -407,6 +463,7 @@ def to_geojson(df: pd.DataFrame) -> dict:
                 "equity_pct": _fmt(row.get("Equity %"), decimals=1, na=""),
                 "high_equity": bool(row.get("High Equity") is True),
                 "low_ltv": bool(row.get("Low LTV") is True),
+                "timeline": row.get("_timeline") or [],
             },
         })
     return {"type": "FeatureCollection", "features": features}
