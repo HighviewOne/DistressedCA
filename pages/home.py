@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, callback, Output, Input, State, dash_table
+from dash import html, dcc, callback, clientside_callback, Output, Input, State, dash_table
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import dash_leaflet as dl
@@ -77,8 +77,19 @@ def _build_sidebar(p: dict) -> list:
 
     sections = []
 
-    # ── Stage badge ───────────────────────────────────────────────────────────
+    # ── Stage + confidence badges ─────────────────────────────────────────────
+    conf_map = {
+        "precise":  ("📍 Rooftop",         "#15803d"),
+        "good":     ("📍 Good Match",       "#2563eb"),
+        "approx":   ("⚠ Verify Location",  "#d97706"),
+        "geocoded": ("📍 Geocoded",         "#6b7280"),
+    }
+    conf_label, conf_color = conf_map.get(p.get("geocode_confidence","geocoded"),
+                                          ("📍 Geocoded", "#6b7280"))
     badges = [dbc.Badge(stage_short, style={"backgroundColor": color}, className="me-1 mb-2")]
+    badges.append(dbc.Badge(conf_label,
+                             style={"backgroundColor": conf_color, "fontSize": "0.68rem"},
+                             className="me-1 mb-2"))
     if p.get("hard_money") == "Yes": badges.append(_badge("Hard Money", "#fbbf24", "#000"))
     if p.get("corporate")  == "Yes": badges.append(_badge("Corporate", "#6b7280"))
     if p.get("source")     == "RETRAN": badges.append(_badge("RETRAN", "#3b82f6"))
@@ -233,7 +244,9 @@ def layout():
         })
 
     return dbc.Container([
-        dcc.Store(id="loan-defaults", data={"min": 0, "max": max_loan}),
+        dcc.Store(id="loan-defaults",           data={"min": 0, "max": max_loan}),
+        dcc.Store(id="sidebar-valuation-store", data=None),
+        dcc.Store(id="batch-launch-dummy",      data=None),
 
         # Property detail sidebar
         dbc.Offcanvas(
@@ -242,8 +255,29 @@ def layout():
             placement="end",
             scrollable=True,
             is_open=False,
-            style={"width": "380px"},
-            children=[],
+            style={"width": "390px"},
+            children=[
+                # Dynamic property content (changes per pin click)
+                html.Div(id="sidebar-dynamic-content"),
+                html.Hr(className="my-3"),
+                # Fixed Max Bid Calculator (persists between clicks)
+                html.Div(id="max-bid-section", style={"display": "none"}, children=[
+                    html.P("Max Bid Calculator",
+                           className="text-uppercase fw-bold mb-2",
+                           style={"fontSize": "0.7rem", "letterSpacing": "0.08em",
+                                  "color": "#9ca3af"}),
+                    dbc.InputGroup([
+                        dbc.InputGroupText("Target ROI"),
+                        dbc.Input(id="max-bid-pct", type="number", value=20,
+                                  min=0, max=100, step=1),
+                        dbc.InputGroupText("%"),
+                    ], size="sm", className="mb-2"),
+                    html.Div(id="max-bid-result",
+                             className="fw-bold fs-5 text-success"),
+                    html.P("Based on EMV or Assessed Value",
+                           className="text-muted small mb-0"),
+                ]),
+            ],
         ),
 
         # Navbar
@@ -451,6 +485,11 @@ def layout():
                         html.H6("Property Records", className="mb-0 fw-bold d-inline"),
                         html.Span(id="table-count", className="ms-2 small text-muted"),
                         dbc.Button(
+                            [html.I(className="bi bi-rocket me-1"), "Research Selected"],
+                            id="batch-launch-btn", size="sm", color="success",
+                            outline=True, disabled=True, className="float-end ms-2",
+                        ),
+                        dbc.Button(
                             [html.I(className="bi bi-envelope me-1"), "Mailing CSV"],
                             id="mailing-btn", size="sm", color="primary",
                             outline=True, className="float-end ms-2",
@@ -592,8 +631,11 @@ def update_all(counties, stages, date_start, date_end, loan_range, flags,
     else:
         cols = list(records[0].keys())
         table = dash_table.DataTable(
+            id="main-table",
             data=records,
             columns=[{"name": c, "id": c} for c in cols],
+            row_selectable="multi",
+            selected_rows=[],
             page_size=20,
             sort_action="native",
             filter_action="native",
@@ -798,9 +840,11 @@ def export_mailing(n_clicks, counties, stages, date_start, date_end, loan_range,
 
 # ── Property detail sidebar ───────────────────────────────────────────────────
 @callback(
-    Output("property-sidebar", "children"),
-    Output("property-sidebar", "title"),
-    Output("property-sidebar", "is_open"),
+    Output("sidebar-dynamic-content", "children"),
+    Output("property-sidebar",         "title"),
+    Output("property-sidebar",         "is_open"),
+    Output("sidebar-valuation-store",  "data"),
+    Output("max-bid-section",          "style"),
     Input("map-layer", "clickData"),
     prevent_initial_call=True,
 )
@@ -810,6 +854,72 @@ def open_sidebar(click_data):
     props = click_data.get("properties", {})
     if not props.get("address"):
         raise PreventUpdate
+
     content = _build_sidebar(props)
     title   = props.get("address", "Property Details")
-    return content, title, True
+
+    # Extract numeric valuation for Max Bid Calculator (EMV preferred, Assessed fallback)
+    valuation = None
+    for raw in [props.get("emv",""), props.get("assessed_total","")]:
+        clean = str(raw or "").replace("$","").replace(",","").strip()
+        try:
+            v = float(clean)
+            if v > 0:
+                valuation = v
+                break
+        except (ValueError, TypeError):
+            pass
+    show_calc = {"display": "block"} if valuation else {"display": "none"}
+    return content, title, True, valuation, show_calc
+
+
+# ── Max Bid Calculator (clientside) ──────────────────────────────────────────
+clientside_callback(
+    """function(pct, valuation) {
+        if (!valuation || pct === null || pct === undefined) return '';
+        var bid = valuation * (1 - pct / 100);
+        if (bid <= 0) return 'Max Bid: —';
+        return 'Max Bid: $' + Math.round(bid).toLocaleString('en-US');
+    }""",
+    Output("max-bid-result", "children"),
+    Input("max-bid-pct", "value"),
+    Input("sidebar-valuation-store", "data"),
+)
+
+
+# ── Batch Research Launcher (clientside) ──────────────────────────────────────
+clientside_callback(
+    """function(n_clicks, selected_rows, table_data) {
+        if (!n_clicks || !selected_rows || selected_rows.length === 0)
+            return window.dash_clientside.no_update;
+        var max_tabs = Math.min(selected_rows.length, 10);
+        for (var i = 0; i < max_tabs; i++) {
+            var row = table_data[selected_rows[i]];
+            if (!row) continue;
+            var addr = encodeURIComponent(
+                (row['Property Address'] || '') + ' ' + (row['City'] || '') + ' CA'
+            );
+            window.open('https://www.zillow.com/homes/' + addr + '_rb/', '_blank');
+        }
+        return null;
+    }""",
+    Output("batch-launch-dummy", "data"),
+    Input("batch-launch-btn", "n_clicks"),
+    State("main-table", "selected_rows"),
+    State("main-table", "data"),
+    prevent_initial_call=True,
+)
+
+
+# ── Update batch button label + enabled state ─────────────────────────────────
+@callback(
+    Output("batch-launch-btn", "children"),
+    Output("batch-launch-btn", "disabled"),
+    Input("main-table", "selected_rows"),
+    prevent_initial_call=True,
+)
+def update_batch_btn(selected):
+    n = len(selected or [])
+    label = [html.I(className="bi bi-rocket me-1"),
+             f"Research {n} Selected" if n > 0 else "Research Selected"]
+    return label, n == 0

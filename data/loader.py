@@ -406,6 +406,18 @@ _STAGE_PRIORITY = {
 }
 
 
+def _geocode_confidence(row) -> str:
+    """Return confidence level: precise | good | approx | geocoded."""
+    if str(row.get("Source") or "") == "RETRAN":
+        return "precise"   # parcel centroid from county ArcGIS
+    score = pd.to_numeric(row.get("Match Score"), errors="coerce")
+    if pd.notna(score):
+        if score >= 0.9:  return "precise"   # exact APN match
+        if score >= 0.65: return "good"      # single name match
+        return "approx"                      # ambiguous — verify!
+    return "geocoded"  # Census geocoder — generally reliable
+
+
 def _calc_auction_dist(prop_lat: float, prop_lon: float, location: str) -> str:
     """Return formatted distance string (e.g. '12.3 mi') or empty string."""
     if not location or str(location).upper().strip() in ("", "NAN", "NONE"):
@@ -519,6 +531,7 @@ def to_geojson(df: pd.DataFrame) -> dict:
                 "ben_phone": str(row.get("Ben Phone") or "").strip(),
                 "lat_val": float(row["Latitude"]),
                 "lon_val": float(row["Longitude"]),
+                "geocode_confidence": _geocode_confidence(row),
                 "trustee_url": _trustee_portal(
                     str(row.get("Trustee Name") or row.get("Trustee/Lender") or "")
                 ),
