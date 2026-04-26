@@ -1,0 +1,425 @@
+import dash
+from dash import html, dcc, callback, Output, Input, dash_table
+import dash_bootstrap_components as dbc
+import dash_leaflet as dl
+from dash_extensions.javascript import assign
+from data.loader import (
+    load_df, filter_df, to_geojson, to_table_records,
+    STAGE_COLORS, STAGE_SHORT,
+)
+import pandas as pd
+
+dash.register_page(
+    __name__,
+    path="/",
+    title="DistressedCA — California Distressed Properties",
+    name="Map",
+)
+
+# Custom colored circle markers based on foreclosure stage
+point_to_layer = assign("""
+function(feature, latlng, context) {
+    var stageColors = {1: '#f59e0b', 2: '#ef4444', 3: '#22c55e', 4: '#7c3aed'};
+    var color = stageColors[feature.properties.stage_num] || '#6b7280';
+    return L.circleMarker(latlng, {
+        radius: 7,
+        fillColor: color,
+        color: '#fff',
+        weight: 1.5,
+        opacity: 1,
+        fillOpacity: 0.85
+    });
+}
+""")
+
+# Popup shown on marker click
+on_each_feature = assign("""
+function(feature, layer, context) {
+    var p = feature.properties;
+    var popup = '<div style="min-width:240px;font-size:0.85rem;line-height:1.6">';
+
+    // Header: address + stage badge
+    popup += '<b style="font-size:0.95rem">' + (p.address || 'Address unknown') + '</b><br>';
+    if (p.city) popup += p.city + (p.zip ? '&nbsp;' + p.zip : '') + '<br>';
+    popup += '<span style="background:' + p.color + ';color:#fff;padding:1px 7px;border-radius:3px;font-size:0.75rem;font-weight:bold">' + (p.stage_short || '') + '</span>';
+    if (p.county) popup += ' <span style="font-size:0.8rem;color:#555">' + p.county + '</span>';
+    popup += '<br>';
+
+    // Auction block (NTS only)
+    if (p.sale_date) {
+        popup += '<div style="margin:6px 0;padding:6px 8px;background:#fff1f1;border-left:3px solid #ef4444;border-radius:2px">';
+        popup += '<b style="color:#ef4444">&#127942; Auction: ' + p.sale_date;
+        if (p.sale_time) popup += ' at ' + p.sale_time;
+        popup += '</b>';
+        if (p.auction_location) popup += '<br><span style="font-size:0.78rem">' + p.auction_location + '</span>';
+        if (p.min_bid) popup += '<br>Min Bid: <b>' + p.min_bid + '</b>';
+        popup += '</div>';
+    }
+
+    // Financial row
+    popup += 'Loan: <b>' + (p.loan_amount || 'N/A') + '</b>';
+    if (p.ltv) popup += ' &nbsp;LTV: <b>' + p.ltv + '</b>';
+    if (p.emv) popup += ' &nbsp;EMV: ' + p.emv;
+    popup += '<br>';
+
+    if (p.default_amount) popup += 'Default Amt: <b>' + p.default_amount + '</b><br>';
+    popup += 'Recorded: ' + (p.recording_date || '') + '<br>';
+    if (p.borrower) popup += 'Borrower: ' + p.borrower + '<br>';
+
+    // Property details
+    if (p.beds || p.baths || p.sqft || p.year_built) {
+        var details = [];
+        if (p.beds) details.push(p.beds + ' bd');
+        if (p.baths) details.push(p.baths + ' ba');
+        if (p.sqft) details.push(p.sqft + ' sqft');
+        if (p.year_built) details.push('Built ' + p.year_built);
+        popup += details.join(' &middot; ') + '<br>';
+    }
+    if (p.assessed_total) popup += 'Assessed: ' + p.assessed_total + '<br>';
+
+    // Trustee / beneficiary
+    if (p.trustee_name && p.trustee_name !== p.trustee) {
+        popup += 'Trustee: ' + p.trustee_name;
+        if (p.trustee_phone) popup += ' <a href="tel:' + p.trustee_phone + '">' + p.trustee_phone + '</a>';
+        popup += '<br>';
+    } else if (p.trustee) {
+        popup += 'Trustee: ' + p.trustee + '<br>';
+    }
+    if (p.beneficiary) {
+        popup += 'Lender: ' + p.beneficiary;
+        if (p.ben_phone) popup += ' <a href="tel:' + p.ben_phone + '">' + p.ben_phone + '</a>';
+        popup += '<br>';
+    }
+
+    // Badges
+    var badges = '';
+    if (p.hard_money === 'Yes') badges += '<span style="background:#fbbf24;color:#000;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Hard Money</span>';
+    if (p.corporate === 'Yes') badges += '<span style="background:#6b7280;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem;margin-right:3px">Corporate</span>';
+    if (p.source === 'RETRAN') badges += '<span style="background:#3b82f6;color:#fff;padding:1px 5px;border-radius:3px;font-size:0.7rem">RETRAN</span>';
+    if (badges) popup += badges + '<br>';
+
+    if (p.source_url) popup += '<a href="' + p.source_url + '" target="_blank" rel="noopener noreferrer" style="font-size:0.8rem">View County Record ↗</a>';
+    popup += '</div>';
+    layer.bindPopup(popup, {maxWidth: 300});
+    layer.bindTooltip(p.address || 'Click for details', {sticky: true, direction: 'top', offset: [0, -5]});
+}
+""")
+
+LEGEND_ITEMS = [
+    ("NOD", "#f59e0b", "Notice of Default"),
+    ("NTS", "#ef4444", "Notice of Trustee's Sale"),
+    ("NOR", "#22c55e", "Notice of Rescission"),
+    ("TDUS", "#7c3aed", "Trustee's Deed Upon Sale"),
+]
+
+
+def layout():
+    df = load_df()
+    all_counties = sorted(df["County"].dropna().unique().tolist())
+    all_stages = df["Stage"].dropna().unique().tolist()
+    max_loan = int(df["Loan Amount"].max(skipna=True) or 5_000_000)
+    min_date = df["Recording Date"].min()
+    max_date = df["Recording Date"].max()
+
+    stage_options = []
+    for stage in sorted(all_stages):
+        short = STAGE_SHORT.get(stage, stage)
+        color = STAGE_COLORS.get(stage, "#6b7280")
+        stage_options.append({
+            "label": html.Span([
+                html.Span("●", style={"color": color, "marginRight": "5px", "fontSize": "1rem"}),
+                html.Span(short, className="fw-semibold", style={"marginRight": "3px"}),
+                html.Span(stage.split("—")[-1].strip() if "—" in stage else "", className="text-muted small"),
+            ]),
+            "value": stage,
+        })
+
+    return dbc.Container([
+        # Navbar
+        dbc.Navbar(
+            dbc.Container([
+                dbc.NavbarBrand([
+                    html.Span("🏚", className="me-2"),
+                    "DistressedCA",
+                ], href="/", className="fw-bold fs-5 text-danger"),
+                dbc.Nav([
+                    dbc.NavItem(dbc.NavLink("Map", href="/", active="exact")),
+                    dbc.NavItem(dbc.NavLink("About", href="/about")),
+                    dbc.NavItem(dbc.NavLink(
+                        [html.I(className="bi bi-github me-1"), "GitHub"],
+                        href="https://github.com/HighviewOne/DistressedCA",
+                        target="_blank", external_link=True,
+                    )),
+                ], navbar=True, className="ms-auto"),
+            ], fluid=True),
+            color="dark", dark=True, sticky="top", className="mb-0 py-1",
+        ),
+
+        # Main layout: sidebar + content
+        dbc.Row([
+            # --- Filters sidebar ---
+            dbc.Col([
+                dbc.Card([
+                    dbc.CardHeader(html.H6("Filters", className="mb-0 fw-bold")),
+                    dbc.CardBody([
+
+                        # Stage
+                        html.Label("Foreclosure Stage", className="small fw-bold text-muted mb-1"),
+                        dbc.Checklist(
+                            id="stage-filter",
+                            options=stage_options,
+                            value=all_stages,
+                            className="mb-3",
+                        ),
+                        html.Hr(className="my-2"),
+
+                        # County
+                        html.Label("County", className="small fw-bold text-muted mb-1"),
+                        dcc.Dropdown(
+                            id="county-filter",
+                            options=[{"label": c, "value": c} for c in all_counties],
+                            value=[],
+                            multi=True,
+                            placeholder="All counties...",
+                            className="mb-3",
+                        ),
+                        html.Hr(className="my-2"),
+
+                        # Recording Date
+                        html.Label("Recording Date", className="small fw-bold text-muted mb-1"),
+                        dcc.DatePickerRange(
+                            id="date-filter",
+                            min_date_allowed=min_date.date() if pd.notna(min_date) else None,
+                            max_date_allowed=max_date.date() if pd.notna(max_date) else None,
+                            display_format="YYYY-MM-DD",
+                            className="mb-3 w-100",
+                            style={"fontSize": "0.8rem"},
+                        ),
+                        html.Hr(className="my-2"),
+
+                        # Loan Amount
+                        html.Label("Loan Amount", className="small fw-bold text-muted mb-1"),
+                        html.Div(id="loan-range-label", className="small text-muted mb-1"),
+                        dcc.RangeSlider(
+                            id="loan-slider",
+                            min=0,
+                            max=max_loan,
+                            step=25_000,
+                            value=[0, max_loan],
+                            marks={
+                                0: {"label": "$0", "style": {"fontSize": "0.7rem"}},
+                                max_loan: {"label": f"${max_loan // 1_000_000:.0f}M+", "style": {"fontSize": "0.7rem"}},
+                            },
+                            tooltip={"placement": "bottom", "always_visible": False},
+                            className="mb-3",
+                        ),
+                        html.Hr(className="my-2"),
+
+                        # Flag filters
+                        html.Label("Property Flags", className="small fw-bold text-muted mb-1"),
+                        dbc.Checklist(
+                            id="flag-filter",
+                            options=[
+                                {"label": "Hard Money Loan Only", "value": "hard_money"},
+                                {"label": "Corporate Grantor Only", "value": "corporate"},
+                                {"label": html.Span([
+                                    html.Span("Upcoming Auctions Only ", style={"color": "#ef4444", "fontWeight": "600"}),
+                                    html.Span("(NTS with sale date)", className="text-muted"),
+                                ]), "value": "upcoming_auctions"},
+                            ],
+                            value=[],
+                            switch=True,
+                            className="small",
+                        ),
+                    ], style={"overflowY": "auto", "maxHeight": "70vh"}),
+                ], className="mb-2"),
+
+                # Stats card
+                dbc.Card([
+                    dbc.CardHeader(html.H6("Results", className="mb-0 fw-bold")),
+                    dbc.CardBody(html.Div(id="stats-panel", className="small")),
+                ]),
+            ], lg=3, md=12, className="p-2"),
+
+            # --- Map + Table ---
+            dbc.Col([
+                # Map card
+                dbc.Card([
+                    dl.Map(
+                        id="main-map",
+                        center=[36.8, -119.4],
+                        zoom=6,
+                        style={"height": "56vh", "width": "100%", "borderRadius": "4px"},
+                        children=[
+                            dl.TileLayer(
+                                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+                                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                                maxZoom=19,
+                            ),
+                            dl.GeoJSON(
+                                id="map-layer",
+                                data={"type": "FeatureCollection", "features": []},
+                                pointToLayer=point_to_layer,
+                                onEachFeature=on_each_feature,
+                                cluster=True,
+                                zoomToBoundsOnClick=True,
+                                superClusterOptions={"radius": 80, "maxZoom": 16},
+                            ),
+                        ],
+                    ),
+                ], className="mb-1 p-0 border-0 overflow-hidden"),
+
+                # Legend
+                dbc.Row([dbc.Col(html.Div([
+                    html.Span([
+                        html.Span("●", style={"color": color, "marginRight": "2px"}),
+                        html.Span(f" {short}  ", className="small text-muted"),
+                    ])
+                    for short, color, _ in LEGEND_ITEMS
+                ] + [
+                    html.Span("  Clusters zoom in on click", className="small text-muted fst-italic"),
+                ]))], className="mb-2 px-1"),
+
+                # Data table
+                dbc.Card([
+                    dbc.CardHeader([
+                        html.H6("Property Records", className="mb-0 fw-bold d-inline"),
+                        html.Span(id="table-count", className="ms-2 small text-muted"),
+                    ]),
+                    dbc.CardBody(
+                        html.Div(id="table-container", style={"overflowX": "auto"}),
+                        className="p-1",
+                    ),
+                ]),
+            ], lg=9, md=12, className="p-2"),
+        ], className="g-0"),
+    ], fluid=True, className="p-0")
+
+
+@callback(
+    Output("map-layer", "data"),
+    Output("stats-panel", "children"),
+    Output("table-container", "children"),
+    Output("table-count", "children"),
+    Output("loan-range-label", "children"),
+    Input("county-filter", "value"),
+    Input("stage-filter", "value"),
+    Input("date-filter", "start_date"),
+    Input("date-filter", "end_date"),
+    Input("loan-slider", "value"),
+    Input("flag-filter", "value"),
+)
+def update_all(counties, stages, date_start, date_end, loan_range, flags):
+    df = load_df()
+
+    hard_money = "hard_money" in (flags or [])
+    corporate = "corporate" in (flags or [])
+    upcoming_auctions = "upcoming_auctions" in (flags or [])
+    loan_min = loan_range[0] if loan_range else None
+    loan_max = loan_range[1] if loan_range else None
+
+    filtered = filter_df(
+        df,
+        counties=counties or None,
+        stages=stages or None,
+        date_start=date_start,
+        date_end=date_end,
+        hard_money=hard_money,
+        corporate=corporate,
+        loan_min=loan_min,
+        loan_max=loan_max,
+        upcoming_auctions=upcoming_auctions,
+    )
+
+    geojson = to_geojson(filtered)
+    geocoded_count = len(geojson["features"])
+    total_count = len(filtered)
+    stage_counts = filtered["Stage"].value_counts()
+
+    # Loan range label
+    lo = loan_range[0] if loan_range else 0
+    hi = loan_range[1] if loan_range else 0
+    loan_label = f"${lo:,.0f} – ${hi:,.0f}"
+
+    # Stats
+    stats = [
+        dbc.Row([
+            dbc.Col(html.Div([
+                html.Span(f"{total_count:,}", className="fw-bold fs-4 text-primary"),
+                html.Div("total records", className="text-muted" ),
+            ]), width=6),
+            dbc.Col(html.Div([
+                html.Span(f"{geocoded_count:,}", className="fw-bold fs-4"),
+                html.Div("on map", className="text-muted"),
+            ]), width=6),
+        ], className="mb-2 text-center"),
+        html.Hr(className="my-1"),
+    ]
+    for stage, color in STAGE_COLORS.items():
+        count = int(stage_counts.get(stage, 0))
+        short = STAGE_SHORT.get(stage, stage)
+        desc = stage.split("—")[-1].strip() if "—" in stage else stage
+        stats.append(
+            html.Div([
+                html.Span("●", style={"color": color, "marginRight": "5px"}),
+                html.Span(f"{short}: ", className="fw-semibold"),
+                html.Span(f"{count:,}", className="fw-bold"),
+                html.Span(f"  {desc}", className="text-muted"),
+            ], className="mb-1 small")
+        )
+    if total_count > 0:
+        upcoming = int(filtered["Sale Date"].notna().sum()) if "Sale Date" in filtered.columns else 0
+        if upcoming:
+            stats.append(html.Hr(className="my-1"))
+            stats.append(html.Div([
+                html.Span("🔴 ", style={"fontSize": "0.75rem"}),
+                html.Span(f"{upcoming:,} properties with scheduled auction", className="text-danger fw-semibold"),
+            ], className="small"))
+
+    # Table
+    records = to_table_records(filtered)
+    table_count_text = f"(showing {min(len(records), 500):,} of {total_count:,})"
+    if not records:
+        table = html.P("No records match the current filters.", className="text-muted small p-3 mb-0")
+    else:
+        cols = list(records[0].keys())
+        table = dash_table.DataTable(
+            data=records,
+            columns=[{"name": c, "id": c} for c in cols],
+            page_size=20,
+            sort_action="native",
+            filter_action="native",
+            style_table={"overflowX": "auto", "fontSize": "0.8rem"},
+            style_header={
+                "fontWeight": "bold",
+                "backgroundColor": "#f1f5f9",
+                "borderBottom": "2px solid #e2e8f0",
+                "padding": "6px 8px",
+            },
+            style_cell={
+                "padding": "4px 8px",
+                "textAlign": "left",
+                "whiteSpace": "normal",
+                "border": "1px solid #e2e8f0",
+                "maxWidth": "200px",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+            },
+            style_data_conditional=[
+                {
+                    "if": {"filter_query": '{Stage} contains "NTS"'},
+                    "backgroundColor": "#fff1f1",
+                },
+                {
+                    "if": {"filter_query": '{Stage} contains "TDUS"'},
+                    "backgroundColor": "#f5f3ff",
+                },
+                {
+                    "if": {"row_index": "odd"},
+                    "backgroundColor": "#fafafa",
+                },
+            ],
+            style_filter={"backgroundColor": "#f8fafc"},
+        )
+
+    return geojson, stats, table, table_count_text, loan_label

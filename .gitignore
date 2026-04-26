@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Local data (not deployed — use assets/data/nod_master.parquet instead)
+*.xlsx
+*.csv
+*.db
+*.log
+*.html
+
+# Dev artifacts
+larentals-master/
+larentals-master.zip
+.claude/
+
+# dashExtensions JS (auto-generated)
+assets/dashExtensions/
+
+# OS
+.DS_Store
+Thumbs.db
