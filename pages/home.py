@@ -9,7 +9,7 @@ from data.loader import (
     get_headline_stats, STAGE_COLORS, STAGE_SHORT,
 )
 import pandas as pd
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import os
 
 dash.register_page(
@@ -246,8 +246,12 @@ def layout():
     all_counties = sorted(c for c in df["County"].dropna().unique().tolist() if str(c).strip())
     all_stages = [s for s in df["Stage"].dropna().unique().tolist() if s.strip() and s in STAGE_COLORS]
     max_loan = int(df["Loan Amount"].max(skipna=True) or 5_000_000)
-    min_date = df["Recording Date"].min()
-    max_date = df["Recording Date"].max()
+    min_date  = df["Recording Date"].min()
+    max_date  = df["Recording Date"].max()
+
+    # Default date filter: Monday of the current week → today
+    today      = date.today()
+    week_start = today - timedelta(days=today.weekday())   # Monday
 
     stage_options = []
     for stage in sorted(all_stages):
@@ -386,6 +390,7 @@ def layout():
                             id="date-filter",
                             min_date_allowed=min_date.date() if pd.notna(min_date) else None,
                             max_date_allowed=max_date.date() if pd.notna(max_date) else None,
+                            start_date=week_start,
                             display_format="YYYY-MM-DD",
                             className="mb-3 w-100",
                             style={"fontSize": "0.8rem"},
@@ -792,7 +797,8 @@ def reset_filters(_):
     df = load_df()
     all_stages = [s for s in df["Stage"].dropna().unique().tolist()
                   if s.strip() and s in STAGE_COLORS]
-    return all_stages, [], None, None, []
+    this_monday = date.today() - timedelta(days=date.today().weekday())
+    return all_stages, [], this_monday, None, []
 
 
 @callback(
