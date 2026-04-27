@@ -232,7 +232,7 @@ def _make_standalone_retran(rt: pd.DataFrame, master_apns: set) -> pd.DataFrame:
             "Document Type": doc,
             "Stage": stage,
             "Stage #": stage_num,
-            "County": str(r.get("county_rt") or "Unknown").strip() or "Unknown",
+            "County": str(r.get("county_rt") or "").strip(),
             "Recording Date": r.get("recording_date_rt"),
             "Hard Money Loan?": "No",
             "Corporate Grantor?": "No",
