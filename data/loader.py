@@ -357,21 +357,18 @@ def get_headline_stats(df: pd.DataFrame) -> dict:
     today   = pd.Timestamp("today").normalize()
     week_ahead = today + pd.Timedelta(days=7)
     week_ago   = today - pd.Timedelta(days=7)
+    sd = df["Sale Date"] if "Sale Date" in df.columns else pd.Series(dtype="datetime64[ns]")
+    rd = df["Recording Date"] if "Recording Date" in df.columns else pd.Series(dtype="datetime64[ns]")
     return {
         "auctions_this_week": int(
-            df["Sale Date"].notna() &
-            (df["Sale Date"] >= today) &
-            (df["Sale Date"] <= week_ahead)
-        ).sum() if "Sale Date" in df.columns else 0,
+            (sd.notna() & (sd >= today) & (sd <= week_ahead)).sum()
+        ),
         "new_nods_week": int(
-            (df["Stage"] == "NOD  — Notice of Default") &
-            (df["Recording Date"] >= week_ago)
-        ).sum() if "Recording Date" in df.columns else 0,
-        "high_equity": int(df.get("High Equity", pd.Series(False)).sum()),
-        "low_ltv":     int(df.get("Low LTV",     pd.Series(False)).sum()),
-        "total_upcoming": int(
-            df["Sale Date"].notna() & (df["Sale Date"] >= today)
-        ).sum() if "Sale Date" in df.columns else 0,
+            ((df["Stage"] == "NOD  — Notice of Default") & (rd >= week_ago)).sum()
+        ),
+        "high_equity":    int(df.get("High Equity", pd.Series(False, index=df.index)).sum()),
+        "low_ltv":        int(df.get("Low LTV",     pd.Series(False, index=df.index)).sum()),
+        "total_upcoming": int((sd.notna() & (sd >= today)).sum()),
     }
 
 

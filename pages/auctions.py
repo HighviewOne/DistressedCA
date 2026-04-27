@@ -191,8 +191,8 @@ def update_auctions(counties, bid_range):
         ]), className="text-center"), md=3),
         dbc.Col(dbc.Card(dbc.CardBody([
             html.Span(
-                str(int(upcoming[upcoming.get("High Equity", pd.Series(False))
-                                  .astype(bool)].shape[0])),
+                str(int(upcoming.get("High Equity", pd.Series(False, index=upcoming.index))
+                        .astype(bool).sum())),
                 className="fw-bold fs-3 text-success",
             ),
             html.Div("high-equity auctions", className="text-muted small"),
