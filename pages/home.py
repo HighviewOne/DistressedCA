@@ -249,9 +249,13 @@ def layout():
     min_date  = df["Recording Date"].min()
     max_date  = df["Recording Date"].max()
 
-    # Default date filter: Monday of the current week → today
-    today      = date.today()
-    week_start = today - timedelta(days=today.weekday())   # Monday
+    # Default date filter: last 7 days of data actually in the file
+    # (avoids UTC vs local timezone mismatch on Render)
+    latest_rec = df["Recording Date"].dropna().max()
+    if pd.notna(latest_rec):
+        week_start = (latest_rec - pd.Timedelta(days=6)).date()
+    else:
+        week_start = date.today() - timedelta(days=7)
 
     stage_options = []
     for stage in sorted(all_stages):
@@ -797,8 +801,10 @@ def reset_filters(_):
     df = load_df()
     all_stages = [s for s in df["Stage"].dropna().unique().tolist()
                   if s.strip() and s in STAGE_COLORS]
-    this_monday = date.today() - timedelta(days=date.today().weekday())
-    return all_stages, [], this_monday, None, []
+    df2 = load_df()
+    latest = df2["Recording Date"].dropna().max()
+    default_start = (latest - pd.Timedelta(days=6)).date() if pd.notna(latest) else None
+    return all_stages, [], default_start, None, []
 
 
 @callback(
