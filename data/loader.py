@@ -199,9 +199,14 @@ def _make_standalone_retran(rt: pd.DataFrame, master_apns: set) -> pd.DataFrame:
         return pd.DataFrame()
 
     def _address(row):
-        house = str(row.get("Situs_House") or "").strip()
+        house  = str(row.get("Situs_House")  or "").strip()
         street = str(row.get("Situs_Street") or "").strip()
-        return f"{house} {street}".strip() if house or street else ""
+        if not house and not street:
+            return ""
+        # Situs_Street sometimes already includes the house number
+        if house and street and street.startswith(house):
+            return street
+        return f"{house} {street}".strip()
 
     rows = []
     for _, r in standalone.iterrows():
@@ -345,6 +350,29 @@ def _add_investor_flags(df: pd.DataFrame) -> pd.DataFrame:
     df["High Equity"]= equity_pct > 30
     df["Low LTV"]    = ltv_col.between(0.1, 49.9, inclusive="both")
     return df
+
+
+def get_headline_stats(df: pd.DataFrame) -> dict:
+    """Return global snapshot numbers for the headline bar (ignores active filters)."""
+    today   = pd.Timestamp("today").normalize()
+    week_ahead = today + pd.Timedelta(days=7)
+    week_ago   = today - pd.Timedelta(days=7)
+    return {
+        "auctions_this_week": int(
+            df["Sale Date"].notna() &
+            (df["Sale Date"] >= today) &
+            (df["Sale Date"] <= week_ahead)
+        ).sum() if "Sale Date" in df.columns else 0,
+        "new_nods_week": int(
+            (df["Stage"] == "NOD  — Notice of Default") &
+            (df["Recording Date"] >= week_ago)
+        ).sum() if "Recording Date" in df.columns else 0,
+        "high_equity": int(df.get("High Equity", pd.Series(False)).sum()),
+        "low_ltv":     int(df.get("Low LTV",     pd.Series(False)).sum()),
+        "total_upcoming": int(
+            df["Sale Date"].notna() & (df["Sale Date"] >= today)
+        ).sum() if "Sale Date" in df.columns else 0,
+    }
 
 
 def filter_df(

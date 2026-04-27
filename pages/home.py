@@ -6,7 +6,7 @@ import dash_leaflet as dl
 from dash_extensions.javascript import assign
 from data.loader import (
     load_df, filter_df, to_geojson, to_table_records,
-    STAGE_COLORS, STAGE_SHORT,
+    get_headline_stats, STAGE_COLORS, STAGE_SHORT,
 )
 import pandas as pd
 from datetime import date, datetime, timezone
@@ -205,6 +205,24 @@ def _build_sidebar(p: dict) -> list:
     return sections
 
 
+def _stat_chip(label: str, color: str, href: str | None = None) -> html.Span:
+    style = {
+        "backgroundColor": color + "18",  # 10% opacity background
+        "color": color,
+        "border": f"1px solid {color}44",
+        "borderRadius": "999px",
+        "padding": "2px 10px",
+        "fontSize": "0.78rem",
+        "fontWeight": "600",
+        "whiteSpace": "nowrap",
+        "cursor": "pointer" if href else "default",
+        "textDecoration": "none",
+    }
+    if href:
+        return html.A(label, href=href, style=style)
+    return html.Span(label, style=style)
+
+
 def _last_updated() -> str:
     """Human-readable age of the Parquet snapshot."""
     try:
@@ -223,7 +241,8 @@ def _last_updated() -> str:
 
 
 def layout():
-    df = load_df()
+    df    = load_df()
+    stats = get_headline_stats(df)
     all_counties = sorted(df["County"].dropna().unique().tolist())
     all_stages = [s for s in df["Stage"].dropna().unique().tolist() if s.strip() and s in STAGE_COLORS]
     max_loan = int(df["Loan Amount"].max(skipna=True) or 5_000_000)
@@ -288,9 +307,10 @@ def layout():
                     "DistressedCA",
                 ], href="/", className="fw-bold fs-5 text-danger"),
                 dbc.Nav([
-                    dbc.NavItem(dbc.NavLink("Map", href="/", active="exact")),
-                    dbc.NavItem(dbc.NavLink("Trends", href="/trends")),
-                    dbc.NavItem(dbc.NavLink("About", href="/about")),
+                    dbc.NavItem(dbc.NavLink("Map",      href="/",        active="exact")),
+                    dbc.NavItem(dbc.NavLink("Auctions", href="/auctions")),
+                    dbc.NavItem(dbc.NavLink("Trends",   href="/trends")),
+                    dbc.NavItem(dbc.NavLink("About",    href="/about")),
                     dbc.NavItem(dbc.NavLink(
                         [html.I(className="bi bi-github me-1"), "GitHub"],
                         href="https://github.com/HighviewOne/DistressedCA",
@@ -300,6 +320,17 @@ def layout():
             ], fluid=True),
             color="dark", dark=True, sticky="top", className="mb-0 py-1",
         ),
+
+        # ── Headline stats bar ────────────────────────────────────────────────
+        dbc.Row(dbc.Col(
+            html.Div([
+                _stat_chip(f"🔨 {stats['auctions_this_week']} auctions this week", "#ef4444",
+                           href="/auctions"),
+                _stat_chip(f"📋 {stats['new_nods_week']} new NODs (7d)", "#f59e0b"),
+                _stat_chip(f"💰 {stats['high_equity']} high-equity leads", "#16a34a"),
+                _stat_chip(f"🔒 {stats['low_ltv']} low-LTV leads", "#2563eb"),
+            ], className="d-flex flex-wrap gap-2 py-2 px-1"),
+        ), className="g-0"),
 
         # Mobile filter toggle (hidden on desktop)
         dbc.Row(dbc.Col(

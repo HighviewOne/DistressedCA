@@ -23,9 +23,10 @@ def _navbar():
             dbc.NavbarBrand([html.Span("🏚", className="me-2"), "DistressedCA"],
                             href="/", className="fw-bold fs-5 text-danger"),
             dbc.Nav([
-                dbc.NavItem(dbc.NavLink("Map",    href="/")),
-                dbc.NavItem(dbc.NavLink("Trends", href="/trends", active=True)),
-                dbc.NavItem(dbc.NavLink("About",  href="/about")),
+                dbc.NavItem(dbc.NavLink("Map",      href="/")),
+                dbc.NavItem(dbc.NavLink("Auctions", href="/auctions")),
+                dbc.NavItem(dbc.NavLink("Trends",   href="/trends", active=True)),
+                dbc.NavItem(dbc.NavLink("About",    href="/about")),
                 dbc.NavItem(dbc.NavLink(
                     [html.I(className="bi bi-github me-1"), "GitHub"],
                     href="https://github.com/HighviewOne/DistressedCA",
