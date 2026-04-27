@@ -40,7 +40,7 @@ def _navbar():
 
 def layout():
     df = load_df()
-    all_counties = sorted(df["County"].dropna().unique().tolist())
+    all_counties = sorted(c for c in df["County"].dropna().unique().tolist() if str(c).strip())
 
     upcoming = df[df["Sale Date"].notna() &
                   (df["Sale Date"] >= pd.Timestamp("today").normalize())].copy()

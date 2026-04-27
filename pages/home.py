@@ -243,7 +243,7 @@ def _last_updated() -> str:
 def layout():
     df    = load_df()
     stats = get_headline_stats(df)
-    all_counties = sorted(df["County"].dropna().unique().tolist())
+    all_counties = sorted(c for c in df["County"].dropna().unique().tolist() if str(c).strip())
     all_stages = [s for s in df["Stage"].dropna().unique().tolist() if s.strip() and s in STAGE_COLORS]
     max_loan = int(df["Loan Amount"].max(skipna=True) or 5_000_000)
     min_date = df["Recording Date"].min()
