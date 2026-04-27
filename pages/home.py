@@ -563,8 +563,8 @@ def layout():
     Input("loan-slider", "value"),
     Input("flag-filter", "value"),
     Input("bounds-filter-switch", "value"),
-    Input("main-map", "center"),
-    Input("main-map", "zoom"),
+    State("main-map", "center"),
+    State("main-map", "zoom"),
 )
 def update_all(counties, stages, date_start, date_end, loan_range, flags,
                bounds_active, map_center, map_zoom):
