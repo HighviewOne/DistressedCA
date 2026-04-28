@@ -160,6 +160,32 @@ def _load_retran_raw() -> pd.DataFrame:
     return combined
 
 
+def _norm_address_key(s):
+    """Clean and normalize address for fuzzy matching fallback."""
+    s = str(s or "").upper().strip()
+    # Remove ZIP and CA
+    s = re.sub(r"\bCA\b", "", s)
+    s = re.sub(r"\b\d{5}(-\d{4})?\b", "", s)
+    # Basic suffix normalization
+    s = re.sub(r"\bSTREET\b", "ST", s)
+    s = re.sub(r"\bAVENUE\b", "AVE", s)
+    s = re.sub(r"\bBOULEVARD\b", "BLVD", s)
+    s = re.sub(r"\bDRIVE\b", "DR", s)
+    s = re.sub(r"\bROAD\b", "RD", s)
+    s = re.sub(r"\bLANE\b", "LN", s)
+    s = re.sub(r"\bCIRCLE\b", "CIR", s)
+    s = re.sub(r"\bCOURT\b", "CT", s)
+    s = re.sub(r"\bPLACE\b", "PL", s)
+    s = re.sub(r"\bHIGHWAY\b", "HWY", s)
+    s = re.sub(r"\bNORTH\b", "N", s)
+    s = re.sub(r"\bSOUTH\b", "S", s)
+    s = re.sub(r"\bEAST\b", "E", s)
+    s = re.sub(r"\bWEST\b", "W", s)
+    # Remove punctuation and extra spaces
+    s = re.sub(r"[^A-Z0-9\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def _build_retran_enrichment(rt: pd.DataFrame) -> pd.DataFrame:
     """Return one row per APN with the most useful RETRAN fields for enriching NOD Master."""
     if rt.empty:
@@ -170,6 +196,17 @@ def _build_retran_enrichment(rt: pd.DataFrame) -> pd.DataFrame:
     rt = rt.copy()
     rt["_sort"] = rt["document_type"].map(order).fillna(9)
     rt = rt.sort_values(["apn_norm", "_sort", "sale_date"], na_position="last")
+
+    # Build address key for fallback matching
+    def _rt_addr(r):
+        h = str(r.get("Situs_House") or "").strip()
+        s = str(r.get("Situs_Street") or "").strip()
+        c = str(r.get("Situs_City") or "").strip()
+        if s.startswith(h) and h:
+            return _norm_address_key(f"{s} {c}")
+        return _norm_address_key(f"{h} {s} {c}")
+
+    rt["addr_key"] = rt.apply(_rt_addr, axis=1)
 
     agg = rt.groupby("apn_norm", sort=False).agg(
         sale_date=("sale_date", "first"),
@@ -184,6 +221,7 @@ def _build_retran_enrichment(rt: pd.DataFrame) -> pd.DataFrame:
         trustee_phone=("tee_phone", "first"),
         beneficiary=("beneficiary_name", "first"),
         ben_phone=("ben_phone", "first"),
+        addr_key=("addr_key", "first"),
     ).reset_index()
 
     return agg
@@ -289,6 +327,7 @@ def load_df() -> pd.DataFrame:
     master["Longitude"] = pd.to_numeric(master["Longitude"], errors="coerce")
     master["Stage #"] = pd.to_numeric(master.get("Stage #", 0), errors="coerce").fillna(0).astype(int)
     master["apn_norm"] = master["APN"].apply(_norm_apn)
+    master["addr_key"] = master["Property Address"].apply(_norm_address_key)
     master["Source"] = "NOD Master"
 
     rt = _load_retran_raw()
@@ -313,11 +352,28 @@ def load_df() -> pd.DataFrame:
             "trustee_phone":  "Trustee Phone",
             "beneficiary":    "Beneficiary",
             "ben_phone":      "Ben Phone",
-        })[["apn_norm", "Sale Date", "Sale Time", "Min Bid", "Auction Location",
+        })[["apn_norm", "addr_key", "Sale Date", "Sale Time", "Min Bid", "Auction Location",
             "LTV", "EMV", "Default Amount", "Trustee Name",
             "Trustee Phone", "Beneficiary", "Ben Phone"]]
 
-        master = master.merge(enrich_df, on="apn_norm", how="left")
+        # Primary match: APN
+        master = master.merge(enrich_df.drop(columns="addr_key"), on="apn_norm", how="left")
+
+        # Fallback match: Address (for records missing APN in Master)
+        no_apn = master[master["apn_norm"] == ""].index
+        if not no_apn.empty and "addr_key" in enrich_df.columns:
+            # Create a dedicated address lookup (dropping rows with empty keys)
+            addr_lookup = enrich_df[enrich_df["addr_key"] != ""].drop_duplicates("addr_key")
+            # Join onto the no-APN subset
+            fallback = master.loc[no_apn, ["addr_key"]].merge(addr_lookup, on="addr_key", how="inner")
+            if not fallback.empty:
+                # Update master with fallback values for columns that are currently NaN
+                # We need to align the indexes for the update
+                for col in addr_lookup.columns:
+                    if col in master.columns and col not in ["addr_key", "apn_norm"]:
+                        # Use a temporary series to handle the mapping
+                        mapper = fallback.set_index("addr_key")[col]
+                        master.loc[no_apn, col] = master.loc[no_apn, col].fillna(master.loc[no_apn, "addr_key"].map(mapper))
 
         # Append standalone RETRAN records
         master_apns = set(master["apn_norm"].tolist())
@@ -357,18 +413,21 @@ def get_headline_stats(df: pd.DataFrame) -> dict:
     today   = pd.Timestamp("today").normalize()
     week_ahead = today + pd.Timedelta(days=7)
     week_ago   = today - pd.Timedelta(days=7)
-    sd = df["Sale Date"] if "Sale Date" in df.columns else pd.Series(dtype="datetime64[ns]")
-    rd = df["Recording Date"] if "Recording Date" in df.columns else pd.Series(dtype="datetime64[ns]")
     return {
         "auctions_this_week": int(
-            (sd.notna() & (sd >= today) & (sd <= week_ahead)).sum()
-        ),
+            (df["Sale Date"].notna() &
+            (df["Sale Date"] >= today) &
+            (df["Sale Date"] <= week_ahead)).sum()
+        ) if "Sale Date" in df.columns else 0,
         "new_nods_week": int(
-            ((df["Stage"] == "NOD  — Notice of Default") & (rd >= week_ago)).sum()
-        ),
-        "high_equity":    int(df.get("High Equity", pd.Series(False, index=df.index)).sum()),
-        "low_ltv":        int(df.get("Low LTV",     pd.Series(False, index=df.index)).sum()),
-        "total_upcoming": int((sd.notna() & (sd >= today)).sum()),
+            ((df["Stage"] == "NOD  — Notice of Default") &
+            (df["Recording Date"] >= week_ago)).sum()
+        ) if "Recording Date" in df.columns else 0,
+        "high_equity": int(df.get("High Equity", pd.Series(False)).sum()),
+        "low_ltv":     int(df.get("Low LTV",     pd.Series(False)).sum()),
+        "total_upcoming": int(
+            (df["Sale Date"].notna() & (df["Sale Date"] >= today)).sum()
+        ) if "Sale Date" in df.columns else 0,
     }
 
 

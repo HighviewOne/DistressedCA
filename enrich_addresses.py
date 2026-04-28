@@ -4,9 +4,10 @@ enrich_addresses.py
 ===================
 Fills in missing Property Address (and lat/lon) for NOD Master records
 by querying free, public county GIS APIs.
+Also fills in missing APNs if Property Address is known.
 
 Supported counties:
-  Riverside  — ArcGIS parcel layer (APN lookup + owner-name search)
+  Riverside  — ArcGIS parcel layer (APN lookup + owner-name search + address search)
   LA County  — ArcGIS parcel layer (owner-name search, via assessor_lookup.py)
 
 Usage:
@@ -145,11 +146,6 @@ def _rv_parse(feat: dict) -> dict | None:
     city = city_m.group(1).strip() if city_m else city_full
     zip_ = (a.get("ZIP_CODE") or "").strip().split("-")[0]
 
-    # Build full address
-    address = situs  # SITUS_STREET already has house number
-    if city:
-        address = f"{situs}, {city}, CA {zip_}".strip(", ")
-
     # Centroid from polygon
     rings = (feat.get("geometry") or {}).get("rings", [])
     lat, lon = _centroid(rings)
@@ -158,6 +154,7 @@ def _rv_parse(feat: dict) -> dict | None:
     struc = float(a.get("STRUCTURES") or 0)
 
     return {
+        "APN": a.get("APN"),
         "Property Address": situs,
         "City": city,
         "ZIP": zip_,
@@ -181,6 +178,30 @@ def lookup_rv_by_apn(apn: str) -> dict | None:
     if result:
         result["Match Score"] = 1.0
     return result
+
+
+def lookup_rv_by_address(address: str, city: str = "") -> dict | None:
+    """Lookup APN and details by property address (SITUS_STREET)."""
+    time.sleep(API_PAUSE)
+    # Strip City and State from address if present
+    clean = str(address).upper().strip()
+    if city and city.upper() in clean:
+        clean = clean.split(city.upper())[0].strip()
+    clean = re.sub(r"[^A-Z0-9\s]", "", clean)
+    
+    # Try exact match first
+    feats = _rv_query(f"SITUS_STREET='{clean}'")
+    if not feats:
+        # Try LIKE match
+        tokens = clean.split()
+        if len(tokens) > 2:
+            short = " ".join(tokens[:-1])
+            feats = _rv_query(f"SITUS_STREET LIKE '{short}%'")
+    
+    if not feats:
+        return None
+    
+    return _rv_parse(feats[0])
 
 
 def lookup_rv_by_name(borrower: str, lender: str = "") -> dict | None:
@@ -246,7 +267,7 @@ _COL_MAP = {
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Enrich NOD Master with missing addresses")
+    parser = argparse.ArgumentParser(description="Enrich NOD Master with missing addresses and APNs")
     parser.add_argument("--run",     action="store_true", help="Apply changes (default: dry run)")
     parser.add_argument("--county",  default="all", help="Riverside | LA | all")
     parser.add_argument("--limit",   type=int, default=0, help="Max rows per county (0=all)")
@@ -262,30 +283,38 @@ def main():
     def blank(val):
         return pd.isna(val) or str(val).strip() in ("", "nan", "None", "NaN")
 
-    missing = df[df["Property Address"].apply(blank)]
-    print(f"  Missing address: {len(missing):,}")
+    missing_addr = df[df["Property Address"].apply(blank)]
+    missing_apn  = df[df["APN"].apply(blank) & df["Property Address"].apply(lambda v: not blank(v))]
+    
+    print(f"  Missing address: {len(missing_addr):,}")
+    print(f"  Missing APN (but have address): {len(missing_apn):,}")
 
     county_arg = args.county.lower()
 
-    # ── Riverside ─────────────────────────────────────────────────────────────��
+    # ── Riverside ──────────────────────────────────────────────────────────────
     if county_arg in ("all", "riverside"):
-        rv_rows = missing[missing["County"].str.contains("Riverside", case=False, na=False)]
-        rv_limit = args.limit or len(rv_rows)
-        rv_apn  = rv_rows[rv_rows["APN"].apply(lambda v: not blank(v))].head(rv_limit)
-        rv_name = rv_rows[rv_rows["APN"].apply(blank)].head(rv_limit)
+        rv_rows_addr = missing_addr[missing_addr["County"].str.contains("Riverside", case=False, na=False)]
+        rv_rows_apn  = missing_apn[missing_apn["County"].str.contains("Riverside", case=False, na=False)]
+        
+        rv_limit = args.limit or (len(rv_rows_addr) + len(rv_rows_apn))
+        
+        rv_apn_lookup  = rv_rows_addr[rv_rows_addr["APN"].apply(lambda v: not blank(v))].head(rv_limit)
+        rv_name_lookup = rv_rows_addr[rv_rows_addr["APN"].apply(blank)].head(rv_limit)
+        rv_addr_lookup = rv_rows_apn.head(rv_limit)
 
         print(f"\nRiverside County:")
-        print(f"  APN lookup:  {len(rv_apn):,} records")
-        print(f"  Name lookup: {len(rv_name):,} records")
+        print(f"  APN lookup:     {len(rv_apn_lookup):,} records")
+        print(f"  Name lookup:    {len(rv_name_lookup):,} records")
+        print(f"  Address lookup: {len(rv_addr_lookup):,} records")
 
         if not args.run:
-            pass  # dry run: just show counts
+            pass  # dry run
         else:
             rv_found = rv_skipped = 0
             lender_col = next((c for c in df.columns if "trustee" in c.lower()), None)
 
-            # Phase A — APN lookup
-            for i, (idx, row) in enumerate(rv_apn.iterrows(), 1):
+            # Phase A — APN lookup (find address for known APN)
+            for i, (idx, row) in enumerate(rv_apn_lookup.iterrows(), 1):
                 apn = str(row.get("APN", "")).strip()
                 result = lookup_rv_by_apn(apn)
                 if result and not blank(result.get("Property Address")):
@@ -294,24 +323,43 @@ def main():
                             df.at[idx, col] = str(result[key])
                     rv_found += 1
                     if i % 20 == 0:
-                        print(f"    APN [{i}/{len(rv_apn)}] ✓{rv_found} — {result['Property Address']}")
+                        print(f"    APN [{i}/{len(rv_apn_lookup)}] ✓{rv_found} — {result['Property Address']}")
                 else:
                     rv_skipped += 1
 
-            # Phase B — name lookup
-            for i, (idx, row) in enumerate(rv_name.iterrows(), 1):
+            # Phase B — Name lookup (find both address and APN by owner name)
+            for i, (idx, row) in enumerate(rv_name_lookup.iterrows(), 1):
                 borrower = str(row.get("Borrower Name", "")).strip()
                 lender   = str(row.get(lender_col, "")).strip() if lender_col else ""
                 result   = lookup_rv_by_name(borrower, lender)
                 if result and not blank(result.get("Property Address")):
+                    if "APN" in df.columns and not blank(result.get("APN")):
+                        df.at[idx, "APN"] = str(result["APN"])
                     for col, key in _COL_MAP.items():
                         if col in df.columns and result.get(key) is not None:
                             df.at[idx, col] = str(result[key])
                     rv_found += 1
                     if i % 25 == 0 or i <= 3:
-                        pct = i / len(rv_name) * 100
-                        print(f"    Name [{i}/{len(rv_name)}  {pct:.0f}%] "
+                        pct = i / len(rv_name_lookup) * 100
+                        print(f"    Name [{i}/{len(rv_name_lookup)}  {pct:.0f}%] "
                               f"✓{rv_found}  — {borrower[:35]} → {result['Property Address']}")
+                else:
+                    rv_skipped += 1
+
+            # Phase C — Address lookup (find APN for known address)
+            for i, (idx, row) in enumerate(rv_addr_lookup.iterrows(), 1):
+                addr = str(row.get("Property Address", "")).strip()
+                city = str(row.get("City", "")).strip()
+                result = lookup_rv_by_address(addr, city)
+                if result and not blank(result.get("APN")):
+                    df.at[idx, "APN"] = str(result["APN"])
+                    # Also fill in other fields if blank
+                    for col, key in _COL_MAP.items():
+                        if col in df.columns and result.get(key) is not None and blank(df.at[idx, col]):
+                            df.at[idx, col] = str(result[key])
+                    rv_found += 1
+                    if i % 20 == 0 or i <= 3:
+                        print(f"    Address [{i}/{len(rv_addr_lookup)}] ✓{rv_found} — {addr} → {result['APN']}")
                 else:
                     rv_skipped += 1
 
@@ -319,7 +367,7 @@ def main():
 
     # ── LA County ──────────────────────────────────────────────────────────────
     if county_arg in ("all", "la"):
-        la_rows = missing[missing["County"].str.contains("LA County", case=False, na=False)]
+        la_rows = missing_addr[missing_addr["County"].str.contains("LA County", case=False, na=False)]
         la_limit = args.limit or len(la_rows)
         la_rows = la_rows.head(la_limit)
         print(f"\nLA County:")
@@ -356,6 +404,8 @@ def main():
                             "Assessed Total($)":result.get("assessed_total"),
                             "Match Score":      result.get("match_score"),
                         }
+                        if "APN" in df.columns and result.get("ain"):
+                            df.at[idx, "APN"] = str(result["ain"])
                         for col, val in la_map.items():
                             if col in df.columns and val not in (None, ""):
                                 df.at[idx, col] = str(val)
@@ -369,22 +419,23 @@ def main():
 
     # ── Summary ────────────────────────────────────────────────────────────────
     if not args.run:
-        total_addressable = len(missing[
-            missing["County"].str.contains("Riverside|LA County", case=False, na=False)
+        total_addressable = len(missing_addr[
+            missing_addr["County"].str.contains("Riverside|LA County", case=False, na=False)
+        ]) + len(missing_apn[
+            missing_apn["County"].str.contains("Riverside", case=False, na=False)
         ])
         print(f"\nDry run complete.")
         print(f"  Records this script can attempt: ~{total_addressable:,}")
-        print(f"  Expected yield: ~40–70% match rate = ~{int(total_addressable*0.55):,} new addresses")
+        print(f"  Expected yield: ~40–70% match rate")
         print(f"\nRun with --run to start enrichment:")
-        print(f"  python enrich_addresses.py --run --county Riverside   # fastest, ~10 min")
-        print(f"  python enrich_addresses.py --run                       # all counties, ~20 min")
-        print(f"\nAfter enrichment, geocode any new addresses:")
-        print(f"  python geocode.py --run")
+        print(f"  python enrich_addresses.py --run --county Riverside")
+        print(f"  python enrich_addresses.py --run")
         return
 
     # Save
     addr_after = df["Property Address"].apply(lambda v: not blank(v)).sum()
-    print(f"\nTotal addressable records after enrichment: {addr_after:,} / {len(df):,}")
+    apn_after  = df["APN"].apply(lambda v: not blank(v)).sum()
+    print(f"\nTotal after enrichment: Address={addr_after:,}, APN={apn_after:,}")
 
     backup = NOD_MASTER.with_name(NOD_MASTER.stem + "_pre_enrich.xlsx")
     import shutil
@@ -400,7 +451,7 @@ def main():
             sdf.to_excel(writer, sheet_name=sname, index=False)
 
     print(f"Saved → {NOD_MASTER}")
-    print(f"\nNext: python geocode.py --run   (geocode the newly added addresses)")
+    print(f"\nNext: python geocode.py --run   (geocode any newly added addresses)")
 
 
 if __name__ == "__main__":
