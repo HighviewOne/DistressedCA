@@ -33,37 +33,22 @@ app = dash.Dash(
 app.title = "DistressedCA"
 server = app.server  # expose for gunicorn
 
-# ── Logo mark ───────────────────────────────────────────────────────────────────
-def _logo(size=28):
-    """House icon with warning triangle — using Bootstrap Icons."""
-    return html.Span(
-        [
-            html.I(
-                className="bi bi-house-fill",
-                style={"fontSize": f"{size}px", "color": "var(--ink)",
-                       "lineHeight": "1", "display": "block"},
-            ),
-            html.I(
-                className="bi bi-exclamation-triangle-fill",
-                style={
-                    "fontSize": f"{size * 0.42:.0f}px",
-                    "color": "var(--accent)",
-                    "position": "absolute",
-                    "bottom": "-2px",
-                    "right": "-3px",
-                    "lineHeight": "1",
-                },
-            ),
-        ],
-        style={
-            "position": "relative",
-            "display": "inline-flex",
-            "alignItems": "center",
-            "flexShrink": "0",
-            "width": f"{size + 4}px",
-            "height": f"{size}px",
-        },
-    )
+# ── Logo SVG (from ui.jsx) ───────────────────────────────────────────────────────
+# dcc.Markdown with dangerously_allow_html renders inline SVG that inherits CSS vars.
+# html.Svg is not available in Dash 4.x; this is the clean workaround.
+_LOGO_SVG = """<svg width="28" height="28" viewBox="0 0 32 32" fill="none"
+  aria-hidden="true" style="flex-shrink:0;display:block">
+  <path d="M3 16 L16 5 L29 16 L29 27 Q29 28 28 28 L4 28 Q3 28 3 27 Z"
+    stroke="var(--ink)" stroke-width="1.8" stroke-linejoin="round" fill="none"/>
+  <path d="M16 13.5 L21 22 L11 22 Z" fill="var(--accent)"/>
+  <rect x="15.4" y="15.5" width="1.2" height="3.2" rx="0.4" fill="var(--bg-elev)"/>
+  <rect x="15.4" y="19.4" width="1.2" height="1.2" rx="0.6" fill="var(--bg-elev)"/>
+</svg>"""
+
+
+def _logo():
+    return dcc.Markdown(_LOGO_SVG, dangerously_allow_html=True,
+                        className="dca-logo-svg")
 
 
 def _header():
@@ -78,7 +63,7 @@ def _header():
             # Wordmark
             html.A(
                 [
-                    _logo(28),
+                    _logo(),
                     html.Div(
                         [
                             html.Div(

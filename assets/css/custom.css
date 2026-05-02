@@ -101,6 +101,10 @@ a { color: inherit; }
   box-shadow: var(--shadow-sm);
 }
 
+/* Logo SVG (dcc.Markdown wrapper) */
+.dca-logo-svg { display: flex; align-items: center; margin: 0 !important; }
+.dca-logo-svg p { margin: 0 !important; line-height: 0; }
+
 /* Wordmark */
 .dca-wordmark {
   display: flex;
