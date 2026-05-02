@@ -88,6 +88,8 @@ function(feature, layer, context) {
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
+_BUILD = "v2026-05-02c"  # visible in stat bar — bump to confirm Render deployed latest code
+
 def _last_updated() -> str:
     try:
         from data.loader import PARQUET_SNAPSHOT
@@ -95,12 +97,12 @@ def _last_updated() -> str:
         age = datetime.now() - datetime.fromtimestamp(mtime)
         hours = int(age.total_seconds() // 3600)
         if hours < 1:
-            return "< 1h ago"
+            return f"< 1h · {_BUILD}"
         if hours < 24:
-            return f"{hours}h ago"
-        return f"{hours // 24}d ago"
+            return f"{hours}h ago · {_BUILD}"
+        return f"{hours // 24}d ago · {_BUILD}"
     except Exception:
-        return ""
+        return _BUILD
 
 
 def _money(v) -> str:
@@ -967,20 +969,7 @@ def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date):
         ("upcoming_auctions", "Upcoming auction",   "var(--nts)"),
     ]
 
-    # County chips — strip " County" suffix so they fit as pills; show top 24
-    from collections import Counter
-    county_counts = Counter()  # will be populated by update_all callback
-    county_chips = [
-        html.Div(
-            # Short display name (strip " County" for pill fit)
-            c.replace(" County", ""),
-            id={"type": "county-chip", "index": c},
-            className="dca-county-chip",
-            n_clicks=0,
-            title=c,  # full name on hover
-        )
-        for c in all_counties
-    ]
+    # County filter — simple multi-select dropdown (no pattern-match complexity)
 
     return [
         # ── Stage filter ──────────────────────────────────────────────────────
@@ -1026,14 +1015,13 @@ def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date):
         # ── Counties ─────────────────────────────────────────────────────────
         html.Div([
             html.Div("Counties", className="dca-filter-group-title"),
-            html.Div(county_chips, className="dca-county-chips"),
             dcc.Dropdown(
                 id="county-filter",
-                options=[{"label": c, "value": c} for c in all_counties],
+                options=[{"label": c.replace(" County", ""), "value": c} for c in all_counties],
                 value=[],
                 multi=True,
                 placeholder="All counties…",
-                style={"display": "none"},
+                style={"fontSize": "12px"},
             ),
         ], className="dca-filter-group"),
 
@@ -1102,6 +1090,18 @@ def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date):
 )
 def update_all(counties, stages, date_start, date_end, loan_range, flags,
                sort_by, search, map_center, map_zoom, selected_id):
+    import traceback
+    try:
+        return _update_all_impl(counties, stages, date_start, date_end, loan_range, flags,
+                                sort_by, search, map_center, map_zoom, selected_id)
+    except Exception as exc:
+        print(f"[update_all ERROR] {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        raise
+
+
+def _update_all_impl(counties, stages, date_start, date_end, loan_range, flags,
+                     sort_by, search, map_center, map_zoom, selected_id):
     df = load_df()
 
     hard_money        = "hard_money"        in (flags or [])
@@ -1377,43 +1377,6 @@ def reset_filters(_):
 )
 def reset_loan_slider(_, defaults):
     return [defaults["min"], defaults["max"]]
-
-
-# ── County chip ↔ filter sync ─────────────────────────────────────────────────
-from dash import ALL as _ALL
-
-@callback(
-    Output("county-filter", "value"),
-    Input({"type": "county-chip", "index": _ALL}, "n_clicks"),
-    State({"type": "county-chip", "index": _ALL}, "id"),
-    State("county-filter", "value"),
-    prevent_initial_call=True,
-)
-def toggle_county_chip(n_clicks_list, ids, current_values):
-    from dash import ctx
-    triggered = ctx.triggered_id
-    if not triggered or not isinstance(triggered, dict):
-        raise PreventUpdate
-    county = triggered["index"]
-    current = list(current_values or [])
-    if county in current:
-        current.remove(county)
-    else:
-        current.append(county)
-    return current
-
-
-@callback(
-    Output({"type": "county-chip", "index": _ALL}, "className"),
-    Input("county-filter", "value"),
-    State({"type": "county-chip", "index": _ALL}, "id"),
-)
-def update_county_chip_states(selected, ids):
-    selected_set = set(selected or [])
-    return [
-        "dca-county-chip active" if id_obj["index"] in selected_set else "dca-county-chip"
-        for id_obj in ids
-    ]
 
 
 # ── Export CSV ────────────────────────────────────────────────────────────────
