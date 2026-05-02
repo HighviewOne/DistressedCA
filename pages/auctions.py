@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, callback, Output, Input, dash_table
+from dash import html, dcc, callback, Output, Input
 import dash_bootstrap_components as dbc
 import pandas as pd
 from datetime import date
@@ -12,29 +12,47 @@ dash.register_page(
     name="Auctions",
 )
 
-_NAVBAR_LINKS = [
-    ("Map",      "/",         False),
-    ("Auctions", "/auctions", True),
-    ("Trends",   "/trends",   False),
-    ("About",    "/about",    False),
-]
+_STAGE_COLORS_NEW = {
+    "NOD": ("#D97706", "#FEF3C7"),
+    "NTS": ("#DC2626", "#FEE2E2"),
+    "NOR": ("#059669", "#D1FAE5"),
+    "TDUS": ("#7C3AED", "#EDE9FE"),
+}
 
 
-def _navbar():
-    return dbc.Navbar(
-        dbc.Container([
-            dbc.NavbarBrand([html.Span("🏚", className="me-2"), "DistressedCA"],
-                            href="/", className="fw-bold fs-5 text-danger"),
-            dbc.Nav([
-                dbc.NavItem(dbc.NavLink(name, href=href, active=active))
-                for name, href, active in _NAVBAR_LINKS
-            ] + [dbc.NavItem(dbc.NavLink(
-                [html.I(className="bi bi-github me-1"), "GitHub"],
-                href="https://github.com/HighviewOne/DistressedCA",
-                target="_blank", external_link=True,
-            ))], navbar=True, className="ms-auto"),
-        ], fluid=True),
-        color="dark", dark=True, sticky="top", className="mb-0 py-1",
+def _money_short(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        n = float(str(v).replace("$", "").replace(",", ""))
+        if n >= 1e6:
+            return f"${n/1e6:.2f}M".rstrip("0").rstrip(".")
+        if n >= 1e3:
+            return f"${round(n/1e3)}K"
+        return f"${n:.0f}"
+    except (ValueError, TypeError):
+        return str(v)
+
+
+def _stage_pill(short: str) -> html.Span:
+    color, bg = _STAGE_COLORS_NEW.get(short, ("#78716C", "#F1ECE5"))
+    return html.Span(
+        [html.Span(style={"width": "5px", "height": "5px", "borderRadius": "50%",
+                          "background": color, "display": "inline-block"}),
+         f" {short}"],
+        style={"background": bg, "color": color, "padding": "2px 7px",
+               "borderRadius": "999px", "fontSize": "10px", "fontWeight": "600",
+               "display": "inline-flex", "alignItems": "center", "gap": "4px"},
+    )
+
+
+def _photo_thumb(idx: int) -> html.Div:
+    palettes = [("#E8DCC8","#C9B79A"), ("#D4C4B0","#A89878"), ("#C8B89E","#8E7B5C")]
+    p   = palettes[idx % len(palettes)]
+    sky = ["#B8C5D6","#D8DCE0","#C4CFD9"][idx % 3]
+    bg  = f"linear-gradient(180deg, {sky} 0%, {sky} 44%, {p[0]} 44.5%, {p[1]} 100%)"
+    return html.Div(
+        style={"width":"100%","height":"100%","background":bg,"borderRadius":"var(--r-sm)"},
     )
 
 
@@ -42,212 +60,242 @@ def layout():
     df = load_df()
     all_counties = sorted(c for c in df["County"].dropna().unique().tolist() if str(c).strip())
 
-    upcoming = df[df["Sale Date"].notna() &
-                  (df["Sale Date"] >= pd.Timestamp("today").normalize())].copy()
-    total = len(upcoming)
-    this_week = (upcoming["Sale Date"] <= pd.Timestamp("today") + pd.Timedelta(days=7)).sum()
-    total_min_bid = upcoming["Min Bid"].dropna().sum()
-
-    max_bid_raw = upcoming["Min Bid"].max(skipna=True) or 5_000_000
-
-    return dbc.Container([
-        _navbar(),
-        dbc.Container([
-            # Header row
-            dbc.Row([
-                dbc.Col([
-                    html.H4("Upcoming Trustee Sale Auctions", className="fw-bold mt-3 mb-0"),
-                    html.P(f"{total:,} scheduled auctions · {this_week:,} this week · "
-                           f"Total min bids: ${total_min_bid:,.0f}",
-                           className="text-muted small mb-3"),
-                ], md=8),
-                dbc.Col([
-                    dcc.Dropdown(
-                        id="auctions-county",
-                        options=[{"label": c, "value": c} for c in all_counties],
-                        value=[],
-                        multi=True,
-                        placeholder="All counties",
-                        className="mt-3",
+    return html.Div([
+        dcc.Download(id="auctions-download"),
+        html.Div(
+            html.Div(
+                [
+                    # Hero
+                    html.Div("Auctions", className="dca-hero-eyebrow"),
+                    html.H1("Upcoming trustee sales", className="dca-hero-h1"),
+                    html.P(
+                        "All scheduled auction events from active filings. "
+                        "Sales typically happen at county courthouses; verify times with the trustee before bidding.",
+                        className="dca-hero-lead",
                     ),
-                ], md=4),
-            ]),
 
-            # Min bid slider
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Min Bid Range", className="small fw-bold text-muted mb-1"),
-                    dcc.RangeSlider(
-                        id="auctions-bid-slider",
-                        min=0, max=int(max_bid_raw), step=25_000,
-                        value=[0, int(max_bid_raw)],
-                        marks={0: "$0", int(max_bid_raw): f"${max_bid_raw/1e6:.1f}M"},
-                        tooltip={"placement": "bottom", "always_visible": False},
+                    # Filters row
+                    html.Div(
+                        [
+                            dcc.Dropdown(
+                                id="auctions-county",
+                                options=[{"label": c, "value": c} for c in all_counties],
+                                value=[],
+                                multi=True,
+                                placeholder="All counties…",
+                                style={"minWidth": "220px", "fontSize": "13px"},
+                            ),
+                            html.Button(
+                                [html.I(className="bi bi-download me-2"), "Export CSV"],
+                                id="auctions-export-btn",
+                                className="dca-btn-accent",
+                                n_clicks=0,
+                            ),
+                        ],
+                        style={"display": "flex", "gap": "12px", "alignItems": "center",
+                               "marginTop": "18px", "flexWrap": "wrap"},
                     ),
-                ], md=8),
-                dbc.Col([
-                    dbc.Button(
-                        [html.I(className="bi bi-download me-1"), "Export CSV"],
-                        id="auctions-export-btn", color="secondary",
-                        outline=True, size="sm", className="mt-4 w-100",
-                    ),
-                    dcc.Download(id="auctions-download"),
-                ], md=4),
-            ], className="mb-3"),
 
-            # Stats cards
-            html.Div(id="auctions-stats", className="mb-3"),
+                    # Stats grid
+                    html.Div(id="auctions-stats"),
 
-            # Table
-            dbc.Card([
-                dbc.CardBody(
-                    dcc.Loading(
-                        html.Div(id="auctions-table"),
-                        type="dot", color="#ef4444",
-                    ),
-                    className="p-1",
-                ),
-            ]),
-        ], fluid=True, className="pb-5"),
-    ], fluid=True, className="p-0")
+                    # Auction list
+                    html.Div(id="auctions-list"),
+                ],
+                className="dca-page-inner",
+            ),
+            className="dca-page-content",
+        ),
+    ])
 
 
-def _build_auction_records(df: pd.DataFrame) -> list[dict]:
-    """Convert filtered auction DataFrame to table-ready records."""
+def _build_auction_list(df_filtered: pd.DataFrame) -> list:
     today = pd.Timestamp("today").normalize()
-    cols_out = []
-    for _, row in df.iterrows():
-        sale_date = row.get("Sale Date")
-        days_until = (sale_date - today).days if pd.notna(sale_date) else None
-        min_bid = row.get("Min Bid")
-        emv_raw = row.get("EMV") or row.get("Assessed Total($)")
-        try:
-            emv = float(str(emv_raw or "").replace("$","").replace(",",""))
-        except (ValueError, TypeError):
-            emv = None
-        equity = row.get("Equity %")
-        lat, lon = row.get("Latitude"), row.get("Longitude")
-        auction_loc = str(row.get("Auction Location") or "").strip()
-        dist = _calc_auction_dist(lat, lon, auction_loc) \
-               if pd.notna(lat) and pd.notna(lon) else ""
+    upcoming = df_filtered[
+        df_filtered["Sale Date"].notna() & (df_filtered["Sale Date"] >= today)
+    ].copy().sort_values("Sale Date")
 
-        cols_out.append({
-            "Sale Date":   sale_date.strftime("%Y-%m-%d") if pd.notna(sale_date) else "",
-            "Days Away":   days_until if days_until is not None else "",
-            "Time":        str(row.get("Sale Time") or "").strip(),
-            "Address":     str(row.get("Property Address") or "").strip(),
-            "City":        str(row.get("City") or "").strip(),
-            "County":      str(row.get("County") or "").strip(),
-            "Min Bid":     f"${min_bid:,.0f}" if pd.notna(min_bid) else "",
-            "Distance":    dist,
-            "Auction Site":auction_loc.replace(" nan","").strip(" ,"),
-            "EMV":         f"${emv:,.0f}" if emv else "",
-            "Equity %":    f"{equity:.1f}%" if pd.notna(equity) else "",
-            "Loan Amount": f"${row['Loan Amount']:,.0f}" if pd.notna(row.get("Loan Amount")) else "",
-            "Stage":       STAGE_SHORT.get(str(row.get("Stage") or ""), ""),
-        })
-    return cols_out
+    if upcoming.empty:
+        return [html.P("No upcoming auctions match the current filters.",
+                       style={"color": "var(--ink-3)", "padding": "24px 0"})]
+
+    # Group by date
+    by_date = {}
+    for _, row in upcoming.iterrows():
+        sd = row["Sale Date"]
+        key = sd.strftime("%Y-%m-%d")
+        by_date.setdefault(key, []).append(row)
+
+    sections = []
+    for i, (date_str, rows) in enumerate(sorted(by_date.items())):
+        days_until = (pd.to_datetime(date_str) - today).days
+        badge_bg = "var(--nts)" if days_until <= 7 else "var(--ink-2)"
+        date_label = pd.to_datetime(date_str).strftime("%B %-d, %Y")
+
+        cards = []
+        for j, row in enumerate(rows):
+            short = STAGE_SHORT.get(str(row.get("Stage","")),"")
+            address = str(row.get("Property Address","")).strip()
+            city    = str(row.get("City","")).strip()
+            county  = str(row.get("County","")).strip()
+            min_bid = row.get("Min Bid")
+            equity  = row.get("Equity %")
+            emv_raw = row.get("EMV") or row.get("Assessed Total($)")
+            sale_time = str(row.get("Sale Time","") or "").strip()
+
+            try:
+                emv = float(str(emv_raw or "").replace("$","").replace(",",""))
+            except (ValueError, TypeError):
+                emv = None
+
+            cards.append(html.Div(
+                [
+                    html.Div(
+                        _photo_thumb(i * 10 + j),
+                        className="dca-auction-thumb",
+                    ),
+                    html.Div(
+                        [
+                            html.Div(
+                                [html.Span(address, style={"fontSize":"13px","fontWeight":"600",
+                                                           "flex":"1","overflow":"hidden",
+                                                           "textOverflow":"ellipsis",
+                                                           "whiteSpace":"nowrap"}),
+                                 html.Span(sale_time, style={"fontSize":"11.5px","color":"var(--ink-3)",
+                                                              "whiteSpace":"nowrap",
+                                                              "marginLeft":"8px"}) if sale_time else None],
+                                style={"display":"flex","alignItems":"baseline","gap":"4px"},
+                            ),
+                            html.Div(
+                                [_stage_pill(short),
+                                 html.Span(f"{city} · {county}",
+                                           style={"fontSize":"11.5px","color":"var(--ink-3)","marginLeft":"6px"})],
+                                style={"display":"flex","alignItems":"center","gap":"4px","marginTop":"4px"},
+                            ),
+                            html.Div(
+                                [
+                                    html.Span(
+                                        ["min bid ",
+                                         html.Strong(_money_short(min_bid),
+                                                     style={"color":"var(--ink)"})],
+                                        style={"fontSize":"12.5px","color":"var(--ink-3)"},
+                                    ) if min_bid else None,
+                                    html.Span(
+                                        f"{equity:.0f}% eq · {_money_short(emv)}",
+                                        style={"fontSize":"11.5px","color":"var(--good)",
+                                               "fontWeight":"600"},
+                                    ) if equity else None,
+                                ],
+                                style={"display":"flex","justifyContent":"space-between",
+                                       "marginTop":"6px","alignItems":"center"},
+                            ),
+                        ],
+                        style={"flex":"1","minWidth":"0"},
+                    ),
+                ],
+                className="dca-auction-card",
+            ))
+
+        sections.append(html.Div(
+            [
+                html.Div(
+                    [
+                        html.Span(date_label, className="dca-date-h2"),
+                        html.Span(f"in {days_until}d",
+                                  className="dca-days-badge",
+                                  style={"background": badge_bg}),
+                        html.Span(
+                            f"{len(rows)} auction{'s' if len(rows) != 1 else ''}",
+                            style={"color":"var(--ink-3)","fontSize":"12px"},
+                        ),
+                    ],
+                    className="dca-date-heading",
+                ),
+                html.Div(cards, className="dca-auction-cards-grid"),
+            ],
+            className="dca-date-section",
+        ))
+
+    return sections
 
 
 @callback(
-    Output("auctions-table",  "children"),
-    Output("auctions-stats",  "children"),
-    Input("auctions-county",      "value"),
-    Input("auctions-bid-slider",  "value"),
+    Output("auctions-stats", "children"),
+    Output("auctions-list",  "children"),
+    Input("auctions-county", "value"),
 )
-def update_auctions(counties, bid_range):
+def update_auctions(counties):
     df = load_df()
     today = pd.Timestamp("today").normalize()
 
-    upcoming = df[df["Sale Date"].notna() &
-                  (df["Sale Date"] >= today)].copy()
-
+    upcoming = df[df["Sale Date"].notna() & (df["Sale Date"] >= today)].copy()
     if counties:
         upcoming = upcoming[upcoming["County"].isin(counties)]
-    if bid_range:
-        lo, hi = bid_range
-        mask = upcoming["Min Bid"].isna() | upcoming["Min Bid"].between(lo, hi)
-        upcoming = upcoming[mask]
 
-    upcoming = upcoming.sort_values("Sale Date")
-    records = _build_auction_records(upcoming)
+    this_week = (upcoming["Sale Date"] <= today + pd.Timedelta(days=7)).sum()
+    total_min = upcoming["Min Bid"].dropna().sum()
+    high_eq   = int(upcoming.get("High Equity", pd.Series(dtype=bool)).astype(bool).sum()
+                    if "High Equity" in upcoming.columns else 0)
 
-    # Stats cards
-    this_week = upcoming[upcoming["Sale Date"] <= today + pd.Timedelta(days=7)]
-    by_county = upcoming["County"].value_counts().head(5)
-    stats = dbc.Row([
-        dbc.Col(dbc.Card(dbc.CardBody([
-            html.Span(f"{len(upcoming):,}", className="fw-bold fs-3 text-danger"),
-            html.Div("total upcoming", className="text-muted small"),
-        ]), className="text-center"), md=3),
-        dbc.Col(dbc.Card(dbc.CardBody([
-            html.Span(f"{len(this_week):,}", className="fw-bold fs-3 text-warning"),
-            html.Div("this week", className="text-muted small"),
-        ]), className="text-center"), md=3),
-        dbc.Col(dbc.Card(dbc.CardBody([
-            html.Span(f"${upcoming['Min Bid'].dropna().sum()/1e6:.1f}M",
-                      className="fw-bold fs-3"),
-            html.Div("total min bids", className="text-muted small"),
-        ]), className="text-center"), md=3),
-        dbc.Col(dbc.Card(dbc.CardBody([
-            html.Span(
-                str(int(upcoming.get("High Equity", pd.Series(False, index=upcoming.index))
-                        .astype(bool).sum())),
-                className="fw-bold fs-3 text-success",
+    stats = html.Div(
+        [
+            html.Div(
+                [html.Div(f"{len(upcoming):,}", className="dca-stat-card-num dca-serif",
+                          style={"color":"var(--ink)"}),
+                 html.Div("Total upcoming", className="dca-stat-card-label")],
+                className="dca-stat-card",
             ),
-            html.Div("high-equity auctions", className="text-muted small"),
-        ]), className="text-center"), md=3),
-    ], className="g-2")
-
-    if not records:
-        table = html.P("No upcoming auctions match the current filters.",
-                       className="text-muted p-3 mb-0")
-        return table, stats
-
-    cols = list(records[0].keys())
-    table = dash_table.DataTable(
-        id="auctions-main-table",
-        data=records,
-        columns=[{"name": c, "id": c} for c in cols],
-        sort_action="native",
-        filter_action="native",
-        page_size=25,
-        style_table={"overflowX": "auto", "fontSize": "0.82rem"},
-        style_header={"fontWeight": "bold", "backgroundColor": "#f1f5f9",
-                      "borderBottom": "2px solid #e2e8f0"},
-        style_cell={"padding": "5px 8px", "textAlign": "left", "border": "1px solid #e2e8f0"},
-        style_data_conditional=[
-            {"if": {"filter_query": "{Days Away} = 0 || {Days Away} = 1 || {Days Away} = 2"},
-             "backgroundColor": "#fff1f1", "borderLeft": "3px solid #ef4444"},
-            {"if": {"filter_query": '{Equity %} contains "%"'},
-             "backgroundColor": "#f0fdf4"},
-            {"if": {"row_index": "odd"}, "backgroundColor": "#fafafa"},
+            html.Div(
+                [html.Div(f"{this_week:,}", className="dca-stat-card-num dca-serif",
+                          style={"color":"var(--nts)"}),
+                 html.Div("This week", className="dca-stat-card-label")],
+                className="dca-stat-card",
+            ),
+            html.Div(
+                [html.Div(_money_short(total_min), className="dca-stat-card-num dca-serif",
+                          style={"color":"var(--accent)"}),
+                 html.Div("Total min bids", className="dca-stat-card-label")],
+                className="dca-stat-card",
+            ),
+            html.Div(
+                [html.Div(f"{high_eq:,}", className="dca-stat-card-num dca-serif",
+                          style={"color":"var(--good)"}),
+                 html.Div("High-equity", className="dca-stat-card-label")],
+                className="dca-stat-card",
+            ),
         ],
+        className="dca-stat-grid",
     )
-    return table, stats
+
+    auction_list = _build_auction_list(upcoming)
+    return stats, auction_list
 
 
 @callback(
     Output("auctions-download", "data"),
     Input("auctions-export-btn", "n_clicks"),
-    Input("auctions-county", "value"),
-    Input("auctions-bid-slider", "value"),
+    Input("auctions-county",     "value"),
     prevent_initial_call=True,
 )
-def export_auctions(n_clicks, counties, bid_range):
+def export_auctions(n_clicks, counties):
     from dash.exceptions import PreventUpdate
-    if not n_clicks:
+    from dash import ctx
+    if ctx.triggered_id != "auctions-export-btn" or not n_clicks:
         raise PreventUpdate
     df = load_df()
     today = pd.Timestamp("today").normalize()
     upcoming = df[df["Sale Date"].notna() & (df["Sale Date"] >= today)].copy()
     if counties:
         upcoming = upcoming[upcoming["County"].isin(counties)]
-    if bid_range:
-        lo, hi = bid_range
-        mask = upcoming["Min Bid"].isna() | upcoming["Min Bid"].between(lo, hi)
-        upcoming = upcoming[mask]
     upcoming = upcoming.sort_values("Sale Date")
-    records = _build_auction_records(upcoming)
-    out = pd.DataFrame(records)
+
+    export_cols = ["Sale Date", "Sale Time", "Property Address", "City", "County",
+                   "Min Bid", "EMV", "Equity %", "Loan Amount", "APN",
+                   "Auction Location", "Stage", "Borrower Name"]
+    avail = [c for c in export_cols if c in upcoming.columns]
+    out = upcoming[avail].copy()
+    if "Sale Date" in out.columns:
+        out["Sale Date"] = out["Sale Date"].apply(
+            lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else ""
+        )
     return dcc.send_data_frame(out.to_csv, f"auctions_{date.today()}.csv", index=False)
