@@ -692,6 +692,27 @@ def _build_drawer(p: dict) -> list:
     ]
 
 
+# ── Stat cell helper ─────────────────────────────────────────────────────────
+def _stat_cell(icon: str | None, value: int, label: str, color: str) -> html.Div:
+    num_str = f"{int(value):,}" if value is not None else "0"
+    num_children = (
+        [html.Span(icon, style={"fontSize":"12px","color":color}),
+         html.Span(num_str, className="dca-serif",
+                   style={"fontSize":"26px","lineHeight":"1",
+                          "letterSpacing":"-0.02em","color":color})]
+        if icon else
+        html.Span(num_str, className="dca-serif",
+                  style={"fontSize":"26px","lineHeight":"1",
+                         "letterSpacing":"-0.02em","color":color})
+    )
+    return html.Div(
+        [html.Div(num_children,
+                  style={"display":"flex","alignItems":"baseline","gap":"5px"}),
+         html.Div(label, className="dca-stat-label")],
+        className="dca-stat-cell",
+    )
+
+
 # ── Layout ────────────────────────────────────────────────────────────────────
 def layout():
     df     = load_df()
@@ -703,14 +724,12 @@ def layout():
     min_date     = df["Recording Date"].min()
     max_date     = df["Recording Date"].max()
 
-    latest_rec = df["Recording Date"].dropna().max()
-    if pd.notna(latest_rec):
-        week_start = (latest_rec - pd.Timedelta(days=6)).date()
-    else:
-        week_start = date.today() - timedelta(days=7)
+    # No default date restriction — recent records aren't geocoded yet so a 7-day
+    # window shows almost nothing on the map. Show all pins by default; users can
+    # add a date filter manually.
 
     updated = _last_updated()
-    total_props = stats.get("total_properties", len(df))
+    total_props = len(df)  # get_headline_stats doesn't return total_properties
 
     return html.Div([
         # ── Stores ─────────────────────────────────────────────────────────────
@@ -724,51 +743,17 @@ def layout():
         # ── Stat Bar ───────────────────────────────────────────────────────────
         html.Div(
             [
+                _stat_cell("⚡", stats.get("auctions_this_week", 0),
+                           "Auctions this week", "var(--nts)"),
+                _stat_cell(None, stats.get("new_nods_week", 0),
+                           "New NODs (7d)", "var(--nod)"),
+                _stat_cell("◆", stats.get("high_equity", 0),
+                           "High-equity leads", "var(--good)"),
+                _stat_cell("◇", stats.get("low_ltv", 0),
+                           "Low-LTV leads", "#1D4ED8"),
                 html.Div(
                     [html.Div(
-                        [html.Span("⚡", style={"fontSize":"13px","color":"var(--nts)"}),
-                         html.Span(f"{stats['auctions_this_week']:,}", className="dca-serif",
-                                   style={"fontSize":"26px","lineHeight":"1",
-                                          "letterSpacing":"-0.02em","color":"var(--nts)"})],
-                        style={"display":"flex","alignItems":"baseline","gap":"5px"},
-                     ),
-                     html.Div("Auctions this week", className="dca-stat-label")],
-                    className="dca-stat-cell",
-                ),
-                html.Div(
-                    [html.Div(
-                        html.Span(f"{stats['new_nods_week']:,}", className="dca-serif",
-                                  style={"fontSize":"26px","lineHeight":"1",
-                                         "letterSpacing":"-0.02em","color":"var(--nod)"}),
-                     ),
-                     html.Div("New NODs (7d)", className="dca-stat-label")],
-                    className="dca-stat-cell",
-                ),
-                html.Div(
-                    [html.Div(
-                        [html.Span("◆", style={"fontSize":"12px","color":"var(--good)"}),
-                         html.Span(f"{stats['high_equity']:,}", className="dca-serif",
-                                   style={"fontSize":"26px","lineHeight":"1",
-                                          "letterSpacing":"-0.02em","color":"var(--good)"})],
-                        style={"display":"flex","alignItems":"baseline","gap":"5px"},
-                     ),
-                     html.Div("High-equity leads", className="dca-stat-label")],
-                    className="dca-stat-cell",
-                ),
-                html.Div(
-                    [html.Div(
-                        [html.Span("◇", style={"fontSize":"12px","color":"#1D4ED8"}),
-                         html.Span(f"{stats['low_ltv']:,}", className="dca-serif",
-                                   style={"fontSize":"26px","lineHeight":"1",
-                                          "letterSpacing":"-0.02em","color":"#1D4ED8"})],
-                        style={"display":"flex","alignItems":"baseline","gap":"5px"},
-                     ),
-                     html.Div("Low-LTV leads", className="dca-stat-label")],
-                    className="dca-stat-cell",
-                ),
-                html.Div(
-                    [html.Div(
-                        html.Span(f"{total_props:,}", id="stat-total", className="dca-serif",
+                        html.Span(f"{total_props:,}", className="dca-serif",
                                   style={"fontSize":"26px","lineHeight":"1",
                                          "letterSpacing":"-0.02em","color":"var(--ink-2)"}),
                      ),
@@ -790,19 +775,21 @@ def layout():
                 # ── Filter Rail ────────────────────────────────────────────────
                 html.Div(
                     _build_filter_rail(all_stages, all_counties, max_loan,
-                                       min_date, max_date, week_start),
+                                       min_date, max_date),
                     id="dca-filter-rail",
                 ),
 
                 # ── Map Column ─────────────────────────────────────────────────
+                # IMPORTANT: dl.Map must have an explicit pixel/calc height — NOT
+                # height:100% — because dcc.Loading's wrapper div has height:auto,
+                # so height:100% resolves to 0 and Leaflet never renders tiles.
                 html.Div(
                     [
-                        dcc.Loading(type="circle", color="var(--accent)",
-                            children=dl.Map(
+                        dl.Map(
                                 id="main-map",
                                 center=[36.8, -119.4],
                                 zoom=6,
-                                style={"height": "100%", "width": "100%"},
+                                style={"height": "calc(100vh - 130px)", "width": "100%"},
                                 children=[
                                     dl.LayersControl([
                                         dl.BaseLayer(
@@ -833,7 +820,6 @@ def layout():
                                     ),
                                 ],
                             ),
-                        ),
 
                         # Map count chip
                         html.Div(id="dca-map-count", children="— properties on map"),
@@ -945,50 +931,55 @@ def layout():
     ])
 
 
-def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date, week_start):
+def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date):
     """Build the filter rail children."""
-    # Stage options with colored dots
+    # Stage toggle buttons (visual) + hidden Checklist (the actual filter store)
     stage_items = []
     for stage in all_stages:
         cfg = _STAGE_CFG.get(stage)
         if not cfg:
             continue
-        short = cfg["short"]
         color = cfg["color"]
         full  = cfg["full"]
         stage_items.append(
             html.Div(
                 id={"type": "stage-btn", "index": stage},
                 className="dca-stage-btn",
+                n_clicks=0,
                 children=[
                     html.Span(
                         [html.Span(className="dot", style={"background": color}),
-                         html.Span(short, className="stage-name"),
+                         html.Span(cfg["short"], className="stage-name"),
                          html.Span(full, className="stage-full")],
-                        style={"display":"flex","alignItems":"center"},
+                        style={"display": "flex", "alignItems": "center"},
                     ),
-                    html.Span(id={"type":"stage-count","index":stage},
-                              className="stage-count", children="—"),
+                    html.Span(id={"type": "stage-count", "index": stage},
+                              className="stage-count", children=""),
                 ],
             )
         )
 
     flags_cfg = [
-        ("high_equity", "High Equity (>30%)", "var(--good)"),
-        ("low_ltv",     "Low LTV (<50%)",     "#1D4ED8"),
-        ("hard_money",  "Hard Money loan",    "#A16207"),
-        ("corporate",   "Corporate grantor",  "var(--ink-3)"),
-        ("upcoming_auctions", "Upcoming auction", "var(--nts)"),
+        ("high_equity",       "High Equity (>30%)", "var(--good)"),
+        ("low_ltv",           "Low LTV (<50%)",     "#1D4ED8"),
+        ("hard_money",        "Hard Money loan",    "#A16207"),
+        ("corporate",         "Corporate grantor",  "var(--ink-3)"),
+        ("upcoming_auctions", "Upcoming auction",   "var(--nts)"),
     ]
 
+    # County chips — strip " County" suffix so they fit as pills; show top 24
+    from collections import Counter
+    county_counts = Counter()  # will be populated by update_all callback
     county_chips = [
-        html.Span(
-            [c, html.Span(id={"type":"county-count","index":c}, className="chip-count")],
+        html.Div(
+            # Short display name (strip " County" for pill fit)
+            c.replace(" County", ""),
             id={"type": "county-chip", "index": c},
             className="dca-county-chip",
             n_clicks=0,
+            title=c,  # full name on hover
         )
-        for c in all_counties[:20]
+        for c in all_counties
     ]
 
     return [
@@ -1005,13 +996,15 @@ def _build_filter_rail(all_stages, all_counties, max_loan, min_date, max_date, w
         ], className="dca-filter-group"),
 
         # ── Date range ────────────────────────────────────────────────────────
+        # Default: no start_date → all pins visible. Recent scraped records haven't
+        # been geocoded yet, so a 7-day window shows almost nothing on the map.
         html.Div([
             html.Div("Recording Date", className="dca-filter-group-title"),
             dcc.DatePickerRange(
                 id="date-filter",
                 min_date_allowed=min_date.date() if pd.notna(min_date) else None,
                 max_date_allowed=max_date.date() if pd.notna(max_date) else None,
-                start_date=week_start,
+                start_date=None,
                 display_format="YYYY-MM-DD",
                 style={"fontSize": "12px"},
             ),
@@ -1373,9 +1366,7 @@ def reset_filters(_):
     df = load_df()
     all_stages = [s for s in df["Stage"].dropna().unique().tolist()
                   if s.strip() and s in STAGE_COLORS]
-    latest = df["Recording Date"].dropna().max()
-    default_start = (latest - pd.Timedelta(days=6)).date() if pd.notna(latest) else None
-    return all_stages, [], default_start, None, []
+    return all_stages, [], None, None, []
 
 
 @callback(
@@ -1386,6 +1377,43 @@ def reset_filters(_):
 )
 def reset_loan_slider(_, defaults):
     return [defaults["min"], defaults["max"]]
+
+
+# ── County chip ↔ filter sync ─────────────────────────────────────────────────
+from dash import ALL as _ALL
+
+@callback(
+    Output("county-filter", "value"),
+    Input({"type": "county-chip", "index": _ALL}, "n_clicks"),
+    State({"type": "county-chip", "index": _ALL}, "id"),
+    State("county-filter", "value"),
+    prevent_initial_call=True,
+)
+def toggle_county_chip(n_clicks_list, ids, current_values):
+    from dash import ctx
+    triggered = ctx.triggered_id
+    if not triggered or not isinstance(triggered, dict):
+        raise PreventUpdate
+    county = triggered["index"]
+    current = list(current_values or [])
+    if county in current:
+        current.remove(county)
+    else:
+        current.append(county)
+    return current
+
+
+@callback(
+    Output({"type": "county-chip", "index": _ALL}, "className"),
+    Input("county-filter", "value"),
+    State({"type": "county-chip", "index": _ALL}, "id"),
+)
+def update_county_chip_states(selected, ids):
+    selected_set = set(selected or [])
+    return [
+        "dca-county-chip active" if id_obj["index"] in selected_set else "dca-county-chip"
+        for id_obj in ids
+    ]
 
 
 # ── Export CSV ────────────────────────────────────────────────────────────────

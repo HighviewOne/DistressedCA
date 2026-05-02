@@ -101,9 +101,8 @@ a { color: inherit; }
   box-shadow: var(--shadow-sm);
 }
 
-/* Logo SVG (dcc.Markdown wrapper) */
-.dca-logo-svg { display: flex; align-items: center; margin: 0 !important; }
-.dca-logo-svg p { margin: 0 !important; line-height: 0; }
+/* Logo img */
+.dca-logo-mark { display: block; flex-shrink: 0; }
 
 /* Wordmark */
 .dca-wordmark {
@@ -353,18 +352,21 @@ a { color: inherit; }
 .dca-switch.on .dca-switch-thumb { left: 15px; }
 
 /* County chip pills */
-.dca-county-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.dca-county-chips { display: flex; flex-wrap: wrap; gap: 5px; max-height: 160px; overflow-y: auto; }
 .dca-county-chip {
-  padding: 4px 9px;
+  padding: 3px 8px;
   border-radius: 999px;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 500;
   background: transparent;
   color: var(--ink-2);
   border: 1px solid var(--line-2);
   cursor: pointer;
   transition: background 0.12s, color 0.12s, border-color 0.12s;
+  white-space: nowrap;
+  user-select: none;
 }
+.dca-county-chip:hover { background: var(--bg-sunk); }
 .dca-county-chip.active {
   background: var(--ink);
   color: var(--bg-elev);
