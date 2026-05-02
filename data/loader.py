@@ -668,4 +668,8 @@ def to_table_records(df: pd.DataFrame, max_rows: int = 500) -> list[dict]:
             subset[col] = subset[col].apply(
                 lambda x: str(int(x)) if pd.notna(x) else ""
             )
+    # Categorical columns can't accept "" as a fill value — convert to plain str first
+    for col in subset.columns:
+        if hasattr(subset[col], 'cat'):
+            subset[col] = subset[col].astype(str).replace("nan", "")
     return subset.fillna("").to_dict("records")
