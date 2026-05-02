@@ -717,6 +717,20 @@ def _stat_cell(icon: str | None, value: int, label: str, color: str) -> html.Div
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 def layout():
+    import traceback as _tb
+    try:
+        return _layout_impl()
+    except Exception as _exc:
+        _trace = _tb.format_exc()
+        print(f"[layout ERROR] {_exc}\n{_trace}")
+        return html.Div([
+            html.H3(f"Layout crash ({_BUILD}): {_exc}",
+                    style={"color":"red","fontFamily":"monospace","fontSize":"13px"}),
+            html.Pre(_trace, style={"fontSize":"11px","whiteSpace":"pre-wrap"}),
+        ], style={"padding":"20px"})
+
+
+def _layout_impl():
     df     = load_df()
     stats  = get_headline_stats(df)
     all_counties = sorted(c for c in df["County"].dropna().unique().tolist() if str(c).strip())

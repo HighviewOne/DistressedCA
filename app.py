@@ -30,7 +30,7 @@ app = dash.Dash(
     suppress_callback_exceptions=True,
 )
 
-app.title = "DistressedCA"
+app.title = "DistressedCA [b11b79d]"  # commit hash — update to confirm deploy
 server = app.server  # expose for gunicorn
 
 # ── Logo (from ui.jsx) ──────────────────────────────────────────────────────────
